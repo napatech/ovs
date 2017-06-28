@@ -36,6 +36,9 @@
 #include <rte_meter.h>
 #include <rte_vhost.h>
 
+//  #include <rte_virtio_net.h>
+//  #include <rte_flow_driver.h>
+
 #include "dirs.h"
 #include "dp-packet.h"
 #include "dpdk.h"
@@ -60,6 +63,9 @@
 #include "unixctl.h"
 
 enum {VIRTIO_RXQ, VIRTIO_TXQ, VIRTIO_QNUM};
+
+#include "openvswitch/match.h"
+#include "netdev-hw-offload.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_dpdk);
 static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
@@ -157,7 +163,9 @@ typedef uint8_t dpdk_port_t;
 
 static const struct rte_eth_conf port_conf = {
     .rxmode = {
+
         .mq_mode = ETH_MQ_RX_RSS,
+
         .split_hdr_size = 0,
         .header_split   = 0, /* Header Split disabled */
         .hw_ip_checksum = 0, /* IP checksum offload disabled */
@@ -174,6 +182,10 @@ static const struct rte_eth_conf port_conf = {
     .txmode = {
         .mq_mode = ETH_MQ_TX_NONE,
     },
+    .fdir_conf = {
+        .mode = RTE_FDIR_MODE_PERFECT,
+    },
+
 };
 
 /*
@@ -425,6 +437,14 @@ struct netdev_dpdk {
     /* DPDK-ETH hardware offload features,
      * from the enum set 'dpdk_hw_ol_features' */
     uint32_t hw_ol_features;
+
+    /* added to handle hw offloading of
+     * packet classification.
+     */
+    bool hw_offload;
+    int hw_port_id;
+    uint16_t odp_port_no;
+
 };
 
 struct netdev_rxq_dpdk {
@@ -781,13 +801,21 @@ dpdk_eth_dev_init(struct netdev_dpdk *dev)
     n_txq = MIN(info.max_tx_queues, dev->up.n_txq);
 
     diag = dpdk_eth_dev_queue_setup(dev, n_rxq, n_txq);
+
     if (diag) {
         VLOG_ERR("Interface %s(rxq:%d txq:%d) configure error: %s",
                  dev->up.name, n_rxq, n_txq, rte_strerror(-diag));
         return -diag;
     }
 
+
+    /* TODO: need this to get XL710 get link all times!!
+    * Temp quick and dirty workaround: On startup on DPDK 17.02. That version of DPDK is not officially supported yet by OVS 2.7
+    */
     diag = rte_eth_dev_start(dev->port_id);
+    if (diag == -EOPNOTSUPP)
+        diag = rte_eth_dev_start(dev->port_id);
+
     if (diag) {
         VLOG_ERR("Interface %s start error: %s", dev->up.name,
                  rte_strerror(-diag));
@@ -892,6 +920,11 @@ common_construct(struct netdev *netdev, dpdk_port_t port_no,
     dev->requested_n_txq = NR_QUEUE;
     dev->requested_rxq_size = NIC_PORT_DEFAULT_RXQ_SIZE;
     dev->requested_txq_size = NIC_PORT_DEFAULT_TXQ_SIZE;
+
+    dev->hw_offload = 0;
+    dev->hw_port_id  =-1;
+    dev->odp_port_no = 0xffff;
+
 
     /* Initialize the flow control to NULL */
     memset(&dev->fc_conf, 0, sizeof dev->fc_conf);
@@ -1171,6 +1204,11 @@ netdev_dpdk_get_config(const struct netdev *netdev, struct smap *args)
             smap_add(args, "rx_csum_offload", "false");
         }
     }
+
+    /* If configured, report hw-port-id */
+    if (dev->hw_port_id != (uint32_t)-1)
+         smap_add_format(args, "hw-port-id", "%d", dev->hw_port_id);
+
     ovs_mutex_unlock(&dev->mutex);
 
     return 0;
@@ -1190,6 +1228,611 @@ netdev_dpdk_lookup_by_port_id(dpdk_port_t port_id)
 
     return NULL;
 }
+
+
+static int
+netdev_dpdk_hw_flow_offload(struct netdev *netdev,
+        const struct match *match, int hw_port_id,
+        const struct nlattr *nl_actions, size_t actions_len,
+        int *flow_stat_support, uint16_t flow_id,
+        uint64_t *flow_handle)
+{
+    static const struct flow_item {
+       const char *descr;
+    } flow_item_desc[] = {
+       [RTE_FLOW_ITEM_TYPE_END] = {.descr = "RTE_FLOW_ITEM_TYPE_END"},
+       [RTE_FLOW_ITEM_TYPE_VOID] = {.descr = "RTE_FLOW_ITEM_TYPE_VOID"},
+       [RTE_FLOW_ITEM_TYPE_INVERT] = {.descr = "RTE_FLOW_ITEM_TYPE_INVERT"},
+       [RTE_FLOW_ITEM_TYPE_ANY] = {.descr = "RTE_FLOW_ITEM_TYPE_ANY"},
+       [RTE_FLOW_ITEM_TYPE_PF] = {.descr = "RTE_FLOW_ITEM_TYPE_PF"},
+       [RTE_FLOW_ITEM_TYPE_VF] = {.descr = "RTE_FLOW_ITEM_TYPE_VF"},
+       [RTE_FLOW_ITEM_TYPE_PORT] = {.descr = "RTE_FLOW_ITEM_TYPE_PORT"},
+       [RTE_FLOW_ITEM_TYPE_RAW] = {.descr = "RTE_FLOW_ITEM_TYPE_RAW"},
+       [RTE_FLOW_ITEM_TYPE_ETH] = {.descr = "RTE_FLOW_ITEM_TYPE_ETH"},
+       [RTE_FLOW_ITEM_TYPE_VLAN] = {.descr = "RTE_FLOW_ITEM_TYPE_VLAN"},
+       [RTE_FLOW_ITEM_TYPE_IPV4] = {.descr = "RTE_FLOW_ITEM_TYPE_IPV4"},
+       [RTE_FLOW_ITEM_TYPE_IPV6] = {.descr = "RTE_FLOW_ITEM_TYPE_IPV6"},
+       [RTE_FLOW_ITEM_TYPE_ICMP] = {.descr = "RTE_FLOW_ITEM_TYPE_ICMP"},
+       [RTE_FLOW_ITEM_TYPE_UDP] = {.descr = "RTE_FLOW_ITEM_TYPE_UDP"},
+       [RTE_FLOW_ITEM_TYPE_TCP] = {.descr = "RTE_FLOW_ITEM_TYPE_TCP"},
+       [RTE_FLOW_ITEM_TYPE_SCTP] = {.descr = "RTE_FLOW_ITEM_TYPE_SCTP"},
+       [RTE_FLOW_ITEM_TYPE_VXLAN] = {.descr = "RTE_FLOW_ITEM_TYPE_VXLAN"},
+       [RTE_FLOW_ITEM_TYPE_E_TAG] = {.descr = "RTE_FLOW_ITEM_TYPE_E_TAG"},
+       [RTE_FLOW_ITEM_TYPE_NVGRE] = {.descr = "RTE_FLOW_ITEM_TYPE_NVGRE"},
+    };
+    static const struct flow_action {
+       const char *descr;
+    } flow_action_desc[] = {
+       [RTE_FLOW_ACTION_TYPE_END] = {.descr = "RTE_FLOW_ACTION_TYPE_END"},
+       [RTE_FLOW_ACTION_TYPE_VOID] = {.descr = "RTE_FLOW_ACTION_TYPE_VOID"},
+       [RTE_FLOW_ACTION_TYPE_PASSTHRU] = {.descr = "RTE_FLOW_ACTION_TYPE_PASSTHRU"},
+       [RTE_FLOW_ACTION_TYPE_MARK] = {.descr = "RTE_FLOW_ACTION_TYPE_MARK"},
+       [RTE_FLOW_ACTION_TYPE_FLAG] = {.descr = "RTE_FLOW_ACTION_TYPE_FLAG"},
+       [RTE_FLOW_ACTION_TYPE_QUEUE] = {.descr = "RTE_FLOW_ACTION_TYPE_QUEUE"},
+       [RTE_FLOW_ACTION_TYPE_DROP] = {.descr = "RTE_FLOW_ACTION_TYPE_DROP"},
+       [RTE_FLOW_ACTION_TYPE_COUNT] = {.descr = "RTE_FLOW_ACTION_TYPE_COUNT"},
+       [RTE_FLOW_ACTION_TYPE_DUP] = {.descr = "RTE_FLOW_ACTION_TYPE_DUP"},
+       [RTE_FLOW_ACTION_TYPE_RSS] = {.descr = "RTE_FLOW_ACTION_TYPE_RSS"},
+       [RTE_FLOW_ACTION_TYPE_PF] = {.descr = "RTE_FLOW_ACTION_TYPE_PF"},
+       [RTE_FLOW_ACTION_TYPE_VF] = {.descr = "RTE_FLOW_ACTION_TYPE_VF"},
+    };
+    struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
+    const struct rte_flow_attr flow_attr = {.group=0,.priority=0,.ingress=1,.egress=0};
+    struct flow_pattern {
+        uint32_t max;
+        struct rte_flow_item items[];
+    } *flow = NULL;
+
+    /* Handle actions */
+    struct flow_actions {
+        uint32_t max;
+        struct rte_flow_action actions[];
+    } *rte_actions = NULL;
+    uint8_t *ipv4_next_proto_mask = NULL;
+
+
+    if (!dev->hw_offload) return 0;
+
+    if (VLOG_IS_DBG_ENABLED()) {
+        int x;
+        match_print(match);
+        uint8_t *bb = (uint8_t *)&match->flow;
+        fprintf(stdout,"Flow:");
+          for(x=0; x<sizeof(match->flow); x++) {
+            if(!(x%16)) {
+                fprintf(stdout, "\n>>%02d :", x);
+            }
+            fprintf(stdout, " %02X", *(bb+x));
+          }
+          fprintf(stdout, "\n----------------------\n");
+
+          fprintf(stdout, "Flow mask:");
+          bb = (uint8_t *)&match->wc.masks;
+          for(x=0; x<sizeof(match->wc.masks); x++) {
+            if(!(x%16)) {
+                fprintf(stdout, "\n>>%02d :", x);
+            }
+            fprintf(stdout, " %02X", *(bb+x));
+        }
+        fprintf(stdout, "\n----------------------\n");
+    }
+
+#define CHECK_NONZERO(addr, size) if (!bitset) {\
+uint8_t *padr = (uint8_t *)(addr); int it;\
+for (it = 0; it < (size); it++) {\
+    if (*(padr++) != 0) {\
+        bitset = 1;break;\
+    }\
+}}
+#define CHECK_NONZEROSIMPLE(var)  if (!bitset && (var) != 0) bitset = 1;
+
+    /* Create a wc-zeroed version of flow */
+    struct match match_zero_wc;
+    match_init(&match_zero_wc, &match->flow, &match->wc);
+
+    /*
+     * Check all bits that we cannot yet handle
+     */
+    int bitset = 0;
+    CHECK_NONZERO(&match_zero_wc.flow.tunnel, sizeof(match_zero_wc.flow.tunnel));
+    CHECK_NONZEROSIMPLE(match->wc.masks.metadata);
+    CHECK_NONZEROSIMPLE(match->wc.masks.skb_priority);
+    CHECK_NONZEROSIMPLE(match->wc.masks.pkt_mark);
+    CHECK_NONZEROSIMPLE(match->wc.masks.dp_hash);
+
+    /* recirc id must be zero */
+    CHECK_NONZEROSIMPLE(match_zero_wc.flow.recirc_id);
+
+    CHECK_NONZEROSIMPLE(match->wc.masks.ct_state);
+    CHECK_NONZEROSIMPLE(match->wc.masks.ct_zone);
+    CHECK_NONZEROSIMPLE(match->wc.masks.ct_mark);
+    CHECK_NONZEROSIMPLE(match->wc.masks.ct_label.u64.hi);
+    CHECK_NONZEROSIMPLE(match->wc.masks.ct_label.u64.lo);
+    CHECK_NONZEROSIMPLE(match->wc.masks.conj_id);
+    CHECK_NONZEROSIMPLE(match->wc.masks.actset_output);
+    /* L2 - unsupported */
+    CHECK_NONZERO(&match->wc.masks.mpls_lse, sizeof(match_zero_wc.flow.mpls_lse)/sizeof(ovs_be32));
+    /* L3 - unsupported */
+    CHECK_NONZERO(&match->wc.masks.ipv6_src, sizeof(struct in6_addr));
+    CHECK_NONZERO(&match->wc.masks.ipv6_dst, sizeof(struct in6_addr));
+    CHECK_NONZEROSIMPLE(match->wc.masks.ipv6_label);
+    CHECK_NONZERO(&match->wc.masks.nd_target, sizeof(struct in6_addr));
+    CHECK_NONZERO(&match->wc.masks.arp_sha, sizeof(struct eth_addr));
+    CHECK_NONZERO(&match->wc.masks.arp_tha, sizeof(struct eth_addr));
+
+    /* If fragmented, then don't HW accelerate - for now */
+    CHECK_NONZEROSIMPLE(match_zero_wc.flow.nw_frag);
+
+    /* L4 - unsupported */
+    CHECK_NONZEROSIMPLE(match->wc.masks.igmp_group_ip4);
+
+    if (bitset) {
+        VLOG_INFO("Cannot HW accelerate this flow");
+        return 0;
+    }
+
+    /*
+     * Now convert flow+masks to DPDK RTE FLOW and sent it to eth_dev filter control
+     */
+
+#define FLOW_MAX_ITEMS  100
+#define INC_FLOW_ITEM_CNT(cnt) if (cnt < FLOW_MAX_ITEMS) cnt++; else \
+{VLOG_ERR("Too many flow items for hw offload");goto error_exit;}
+
+    flow = rte_zmalloc(NULL, sizeof(struct flow_pattern) + 100 * sizeof(struct rte_flow_item), 0);
+    flow->max = 0;
+
+    /* Check if any frame header fields must be matched */
+    if (match) {
+
+        /* If virtual port is requested as input port, then change input port id */
+        if (hw_port_id >= 0 && hw_port_id < MAX_HW_PORT_CNT &&
+            hw_port_id != dev->port_id) {
+            struct rte_flow_item_port *port_item = rte_malloc(NULL, sizeof(struct rte_flow_item_port), 0);
+
+            if (port_item) {
+                port_item->index = (uint32_t)hw_port_id;
+                flow->items[flow->max].type = RTE_FLOW_ITEM_TYPE_PORT;
+                flow->items[flow->max].spec = (void *)port_item;
+                flow->items[flow->max].mask = (void *)NULL;
+                INC_FLOW_ITEM_CNT(flow->max);
+            }
+        }
+
+        /* Check if any eth hdr info must be specified */
+        /* ETH */
+        if (match->wc.masks.dl_src.be16[0] || match->wc.masks.dl_src.be16[1] || match->wc.masks.dl_src.be16[2] ||
+            match->wc.masks.dl_dst.be16[0] || match->wc.masks.dl_dst.be16[1] || match->wc.masks.dl_dst.be16[2] ||
+            (match->wc.masks.vlan_tci && match->flow.vlan_tci)) {
+
+            int alloc_size = sizeof(struct rte_flow_item_eth) + (match->wc.masks.vlan_tci)?sizeof(uint32_t):0;
+            struct rte_flow_item_eth *item_eth = rte_malloc(NULL, alloc_size, 0);
+            struct rte_flow_item_eth *item_eth_masks = rte_zmalloc(NULL, alloc_size, 0);
+
+            if (item_eth && item_eth_masks) {
+                rte_memcpy(&item_eth->dst, &match->flow.dl_dst, sizeof(item_eth->dst));
+                rte_memcpy(&item_eth->src, &match->flow.dl_src, sizeof(item_eth->src));
+                item_eth->type = match->flow.dl_type;
+
+                rte_memcpy(&item_eth_masks->dst, &match->wc.masks.dl_dst, sizeof(item_eth_masks->dst));
+                rte_memcpy(&item_eth_masks->src, &match->wc.masks.dl_src, sizeof(item_eth_masks->src));
+
+                item_eth_masks->type = match->wc.masks.dl_type;
+
+                flow->items[flow->max].type = RTE_FLOW_ITEM_TYPE_ETH;
+                flow->items[flow->max].spec = (void *)item_eth;
+                flow->items[flow->max].mask = (void *)item_eth_masks;
+                INC_FLOW_ITEM_CNT(flow->max);
+
+                /* VLAN TCI != 0 */
+                if (match->wc.masks.vlan_tci && match->flow.vlan_tci) {
+                    struct rte_flow_item_vlan *vlan = rte_malloc(NULL, sizeof(struct rte_flow_item_vlan), 0);
+                    struct rte_flow_item_vlan *vlan_mask = rte_malloc(NULL, sizeof(struct rte_flow_item_vlan), 0);
+
+                    if (vlan && vlan_mask) {
+                        vlan->tpid = 0x8100;
+                        vlan->tci = match->flow.vlan_tci;
+                        vlan_mask->tpid = 0xffff;
+                        vlan_mask->tci = match->wc.masks.vlan_tci;
+
+                        flow->items[flow->max].type = RTE_FLOW_ITEM_TYPE_VLAN;
+                        flow->items[flow->max].spec = (void *)vlan;
+                        flow->items[flow->max].mask = (void *)vlan_mask;
+                        INC_FLOW_ITEM_CNT(flow->max);
+                    } else {
+                        /* Failed allocation */
+                        VLOG_ERR("failed to allocate RTE_FLOW vlan item");
+                        goto error_exit;
+                    }
+                }
+
+            } else {
+                /* Failed allocation */
+                VLOG_ERR("failed to allocate RTE_FLOW eth item");
+                goto error_exit;
+            }
+        }
+
+        /* Check if any ip_hdr info must be specified */
+        /* IP v4 */
+        uint8_t proto = 0;
+        if ((match->flow.dl_type == ntohs(ETH_TYPE_IP)) &&
+            (match->wc.masks.nw_src || match->wc.masks.nw_dst ||
+             match->wc.masks.nw_tos || match->wc.masks.nw_ttl || match->wc.masks.nw_proto)) {
+            struct rte_flow_item_ipv4 *item_ipv4 = rte_zmalloc(NULL, sizeof(struct rte_flow_item_ipv4), 0);
+            struct rte_flow_item_ipv4 *item_ipv4_masks = rte_zmalloc(NULL, sizeof(struct rte_flow_item_ipv4), 0);
+
+            if (item_ipv4 && item_ipv4_masks) {
+
+                item_ipv4->hdr.type_of_service = match->flow.nw_tos;
+                item_ipv4_masks->hdr.type_of_service = match->wc.masks.nw_tos;
+                item_ipv4->hdr.time_to_live = match->flow.nw_tos;
+                item_ipv4_masks->hdr.time_to_live = match->wc.masks.nw_tos;
+                item_ipv4->hdr.next_proto_id = match->flow.nw_proto;
+                item_ipv4_masks->hdr.next_proto_id = match->wc.masks.nw_proto;
+
+                /* Save proto for L4 protocol setup */
+                proto = item_ipv4->hdr.next_proto_id & item_ipv4_masks->hdr.next_proto_id;
+
+                /* Remember proto mask address for later modification */
+                ipv4_next_proto_mask = &item_ipv4_masks->hdr.next_proto_id;
+
+                item_ipv4->hdr.src_addr = match->flow.nw_src;
+                item_ipv4_masks->hdr.src_addr = match->wc.masks.nw_src;
+                item_ipv4->hdr.dst_addr = match->flow.nw_dst;
+                item_ipv4_masks->hdr.dst_addr = match->wc.masks.nw_dst;
+
+                flow->items[flow->max].type = RTE_FLOW_ITEM_TYPE_IPV4;
+                flow->items[flow->max].spec = (void *)item_ipv4;
+                flow->items[flow->max].mask = (void *)item_ipv4_masks;
+                INC_FLOW_ITEM_CNT(flow->max);
+            } else {
+                /* Failed allocation */
+                VLOG_ERR("failed to allocate RTE_FLOW ipv4 item");
+                goto error_exit;
+            }
+        } /* End IPv4 */
+
+        if (proto != IPPROTO_ICMP && proto != IPPROTO_UDP && proto != IPPROTO_SCTP && proto != IPPROTO_TCP &&
+            (match->wc.masks.tp_src || match->wc.masks.tp_dst || match->wc.masks.tcp_flags)) {
+            VLOG_INFO("L4 Protocol not supported");
+            goto error_exit;
+        }
+
+        if ((proto == IPPROTO_UDP) && (match->wc.masks.tp_src || match->wc.masks.tp_dst)) {
+            struct rte_flow_item_udp *item_udp = rte_zmalloc(NULL, sizeof(struct rte_flow_item_udp), 0);
+            struct rte_flow_item_udp *item_udp_masks = rte_zmalloc(NULL, sizeof(struct rte_flow_item_udp), 0);
+            if (item_udp && item_udp_masks) {
+                item_udp->hdr.src_port = match->flow.tp_src;
+                item_udp_masks->hdr.src_port = match->wc.masks.tp_src;
+                item_udp->hdr.dst_port = match->flow.tp_dst;
+                item_udp_masks->hdr.dst_port = match->wc.masks.tp_dst;
+
+                flow->items[flow->max].type = RTE_FLOW_ITEM_TYPE_UDP;
+                flow->items[flow->max].spec = (void *)item_udp;
+                flow->items[flow->max].mask = (void *)item_udp_masks;
+                INC_FLOW_ITEM_CNT(flow->max);
+
+                /* proto == UDP and ITEM_TYPE_UDP, thus no need for proto match */
+                if (ipv4_next_proto_mask) *ipv4_next_proto_mask = 0;
+            } else {
+                /* Failed allocation */
+                VLOG_ERR("failed to allocate RTE_FLOW udp item");
+                goto error_exit;
+            }
+        }
+
+        if ((proto == IPPROTO_SCTP) && (match->wc.masks.tp_src || match->wc.masks.tp_dst)) {
+            struct rte_flow_item_sctp *item_sctp = rte_zmalloc(NULL, sizeof(struct rte_flow_item_sctp), 0);
+            struct rte_flow_item_sctp *item_sctp_masks = rte_zmalloc(NULL, sizeof(struct rte_flow_item_sctp), 0);
+            if (item_sctp && item_sctp_masks) {
+                item_sctp->hdr.src_port = match->flow.tp_src;
+                item_sctp_masks->hdr.src_port = match->wc.masks.tp_src;
+                item_sctp->hdr.dst_port = match->flow.tp_dst;
+                item_sctp_masks->hdr.dst_port = match->wc.masks.tp_dst;
+
+                flow->items[flow->max].type = RTE_FLOW_ITEM_TYPE_SCTP;
+                flow->items[flow->max].spec = (void *)item_sctp;
+                flow->items[flow->max].mask = (void *)item_sctp_masks;
+                INC_FLOW_ITEM_CNT(flow->max);
+
+                /* proto == SCTP and ITEM_TYPE_SCTP, thus no need for proto match */
+                if (ipv4_next_proto_mask) *ipv4_next_proto_mask = 0;
+            } else {
+                /* Failed allocation */
+                VLOG_ERR("failed to allocate RTE_FLOW sctp item");
+                goto error_exit;
+            }
+        }
+
+        if ((proto == IPPROTO_ICMP) && (match->wc.masks.tp_src || match->wc.masks.tp_dst)) {
+            struct rte_flow_item_icmp *item_icmp = rte_zmalloc(NULL, sizeof(struct rte_flow_item_icmp), 0);
+            struct rte_flow_item_icmp *item_icmp_masks = rte_zmalloc(NULL, sizeof(struct rte_flow_item_icmp), 0);
+            if (item_icmp && item_icmp_masks) {
+
+                item_icmp->hdr.icmp_type = (uint8_t)ntohs(match->flow.tp_src);
+                item_icmp_masks->hdr.icmp_type = (uint8_t)ntohs(match->wc.masks.tp_src);
+                item_icmp->hdr.icmp_code = (uint8_t)ntohs(match->flow.tp_dst);
+                item_icmp_masks->hdr.icmp_code = (uint8_t)ntohs(match->wc.masks.tp_dst);
+
+                flow->items[flow->max].type = RTE_FLOW_ITEM_TYPE_ICMP;
+                flow->items[flow->max].spec = (void *)item_icmp;
+                flow->items[flow->max].mask = (void *)item_icmp_masks;
+                INC_FLOW_ITEM_CNT(flow->max);
+
+                /* proto == ICMP and ITEM_TYPE_ICMP, thus no need for proto match */
+                if (ipv4_next_proto_mask) *ipv4_next_proto_mask = 0;
+            } else {
+                /* Failed allocation */
+                VLOG_ERR("failed to allocate RTE_FLOW icmp item");
+                goto error_exit;
+            }
+        }
+
+        if ((proto == IPPROTO_TCP) &&
+            (match->wc.masks.tp_src || match->wc.masks.tp_dst || match->wc.masks.tcp_flags)) {
+            struct rte_flow_item_tcp *item_tcp = rte_zmalloc(NULL, sizeof(struct rte_flow_item_tcp), 0);
+            struct rte_flow_item_tcp *item_tcp_masks = rte_zmalloc(NULL, sizeof(struct rte_flow_item_tcp), 0);
+            if (item_tcp && item_tcp_masks) {
+                item_tcp->hdr.src_port = match->flow.tp_src;
+                item_tcp_masks->hdr.src_port = match->wc.masks.tp_src;
+                item_tcp->hdr.dst_port = match->flow.tp_dst;
+                item_tcp_masks->hdr.dst_port = match->wc.masks.tp_dst;
+
+                item_tcp->hdr.data_off = (uint8_t)(ntohs(match->flow.tcp_flags) >> 8);
+                item_tcp_masks->hdr.data_off = (uint8_t)(ntohs(match->wc.masks.tcp_flags) >> 8);
+                item_tcp->hdr.tcp_flags = (uint8_t)(ntohs(match->flow.tcp_flags) & 0xff);
+                item_tcp_masks->hdr.tcp_flags = (uint8_t)(ntohs(match->wc.masks.tcp_flags) & 0xff);
+
+                flow->items[flow->max].type = RTE_FLOW_ITEM_TYPE_TCP;
+                flow->items[flow->max].spec = (void *)item_tcp;
+                flow->items[flow->max].mask = (void *)item_tcp_masks;
+                INC_FLOW_ITEM_CNT(flow->max);
+
+                /* proto == TCP and ITEM_TYPE_TCP, thus no need for proto match */
+                if (ipv4_next_proto_mask) *ipv4_next_proto_mask = 0;
+            } else {
+                /* Failed allocation */
+                VLOG_ERR("failed to allocate RTE_FLOW tcp item");
+                goto error_exit;
+            }
+        }
+
+        if (flow->max) {
+            flow->items[flow->max].type = RTE_FLOW_ITEM_TYPE_END;
+            flow->items[flow->max].spec = (void *)NULL;
+            flow->items[flow->max].mask = (void *)NULL;
+            INC_FLOW_ITEM_CNT(flow->max);
+        }
+    }
+
+    int actions_supported = 1;
+    int output_specifed = 0;
+    int count_idx = -1;
+
+    rte_actions = rte_zmalloc(NULL, sizeof(struct flow_actions) + (actions_len + 2) * sizeof(struct rte_flow_action), 0);
+    if (!rte_actions) {
+        VLOG_ERR("failed to allocate RTE_FLOW actions");
+        goto error_exit;
+    }
+
+    if (actions_len == 0) {
+        /* Drop-action to be performed */
+        rte_actions->actions[rte_actions->max].type = RTE_FLOW_ACTION_TYPE_DROP;
+        rte_actions->max++;
+        rte_actions->actions[rte_actions->max].type = RTE_FLOW_ACTION_TYPE_END;
+        rte_actions->max++;
+    } else {
+
+        VLOG_DBG("ODP-IN-PORT %i has HW-PORT-ID %i\n",match->flow.in_port.odp_port, hw_port_id);
+
+        if (actions_supported && nl_actions) {
+            const struct nlattr *a;
+            unsigned int left;
+            NL_ATTR_FOR_EACH_UNSAFE(a, left, nl_actions, actions_len) {
+                int type = nl_attr_type(a);
+                switch (type) {
+                case OVS_ACTION_ATTR_OUTPUT:
+                {
+                    struct rte_flow_action_mark *id;
+                    uint32_t odp_port_out = nl_attr_get_u32(a);
+                    uint32_t hw_port = (uint32_t)-1;
+
+                    /* Check if odp-output-id is mapped to a physical port-id. */
+                    struct netdev_dpdk *dpdk_dev;
+
+                    /* If output has already one specified - discard offload */
+                    if (output_specifed) {
+                        actions_supported = 0;
+                        break;
+                    }
+
+                    id = rte_malloc(NULL, sizeof(struct rte_flow_action_mark), 0);
+                    if (id) {
+                        LIST_FOR_EACH (dpdk_dev, list_node, &dpdk_list) {
+                            if (dev != dpdk_dev) ovs_mutex_lock(&dpdk_dev->mutex);
+                            if (odp_port_out == dpdk_dev->odp_port_no) {
+
+                                // is a port in HW
+                                hw_port = (uint32_t)(dpdk_dev->hw_port_id);
+
+                                if (dev != dpdk_dev) ovs_mutex_unlock(&dpdk_dev->mutex);
+                                break;
+                            }
+                            if (dev != dpdk_dev) ovs_mutex_unlock(&dpdk_dev->mutex);
+                        }
+
+                        if (hw_port == (uint32_t)-1) {
+                            /* put output odp-port-id instead and set most significant bit to indicate odp port id */
+                            id->id = ((uint32_t)flow_id << 16) | (odp_port_out & FLOW_ID_PORT_MASK) | FLOW_ID_ODP_PORT_BIT;
+                        } else {
+                            /* output-port in mark id lower 15 bits */
+                            id->id = ((uint32_t)flow_id << 16) | (hw_port & FLOW_ID_PORT_MASK);
+                        }
+
+                        if (flow_stat_support && (*flow_stat_support != 0)) {
+                            rte_actions->actions[rte_actions->max].type = RTE_FLOW_ACTION_TYPE_COUNT;
+                            count_idx = rte_actions->max;
+                            rte_actions->max++;
+                        }
+
+                        rte_actions->actions[rte_actions->max].type = RTE_FLOW_ACTION_TYPE_MARK;
+                        rte_actions->actions[rte_actions->max].conf = id;
+                        rte_actions->max++;
+                        output_specifed++;
+                    } else {
+                        /* Failed allocation */
+                        VLOG_ERR("failed to allocate flow id for RTE_MARK action");
+                        goto error_exit;
+                    }
+                    break;
+                }
+
+                default:
+                    VLOG_DBG("DO NOT SUPPORT ACTION TYPE %i\n", type);
+                    actions_supported = 0;
+                    break;
+                }
+            }
+            rte_actions->actions[rte_actions->max].type = RTE_FLOW_ACTION_TYPE_END;
+            rte_actions->max++;
+        }
+    }
+
+    /*
+     * Delete flow is indicated by:
+     * 		1. flow->max == 0 - no flow configuration specified - match is all zero
+     * 		2. all actions_supported
+     * Drop flow is indicated by:
+     * 		1. flow->max > 0 - some flow specified
+     * 		2. no output actions specified
+     * 		3. all actions_supported (drop action) and flow_handle specified
+     */
+    {
+        struct rte_flow_error error;
+        if (flow_handle == NULL) {
+            /* should never happen */
+            VLOG_ERR("INTERNAL ERRROR - flow_handle of zero");
+            goto error_exit;
+        }
+
+        if (*flow_handle != (uint64_t)-1) {
+            int ret = rte_flow_destroy(dev->port_id, (struct rte_flow *)*flow_handle, &error);
+            if (ret == 0) {
+                VLOG_INFO("Flow successfully removed. Handle %lx\n", (long unsigned)*flow_handle);
+                /* return flow handle untouched - indicate successfully deleted */
+            } else {
+                VLOG_INFO("RTE_FLOW DESTROY ERROR: %i : Message : %s\n", error.type, error.message);
+              *flow_handle = (uint64_t)-1;
+            }
+        }
+
+
+        if (flow->max && rte_actions->max && actions_supported) {
+            struct rte_flow *flow_res = NULL;
+            int try, i;
+
+            if (VLOG_IS_DBG_ENABLED()) {
+                VLOG_DBG("Trying to offload the following RTE_FLOW:\nFlow Items:\n");
+                int idx = 0;
+                while (idx < flow->max) {
+                    printf("%s\n", flow_item_desc[flow->items[idx].type].descr);
+                    idx++;
+                }
+            }
+
+            /* RTE_FLOW trial and error sequence
+             * if COUNT/FLOW-STAT supported
+             *   1) try with COUNT and without QUEUE in ACTIONS
+             *   2) try with COUNT and QUEUE=0 in ACTIONS
+             *   3) try without COUNT and with QUEUE=0 in ACTIONS
+             * otherwise
+             *   1) try without COUNT and QUEUE
+             *   2) try without COUNT and with QUEUE=0
+             */
+
+            for (try = 0; try < 3; try++) {
+
+                if (VLOG_IS_DBG_ENABLED()) {
+                    VLOG_DBG("\n%i try: Flow Actions:\n", try+1);
+                    int idx = 0;
+                    while (idx < rte_actions->max) {
+                        VLOG_DBG("%s\n", flow_action_desc[rte_actions->actions[idx].type].descr);
+                        idx++;
+                    }
+                }
+
+                flow_res = rte_flow_create(dev->port_id, &flow_attr, flow->items, rte_actions->actions, &error);
+                if (flow_res != NULL) break; // success!
+
+                if (try == 0) {
+                    /* Queue may be needed  - use queue 0 */
+                    struct rte_flow_action_queue *queue = rte_zmalloc(NULL, sizeof(struct rte_flow_action_queue), 0);
+                    if (queue) {
+                        /* insert QUEUE after COUNT or at index 0 */
+                        int cnt_idx = (count_idx < 0) ? 0 : count_idx + 1;
+
+                        for (i = rte_actions->max; i > cnt_idx; i--) {
+                            rte_actions->actions[i].type = rte_actions->actions[i-1].type;
+                            rte_actions->actions[i].conf = rte_actions->actions[i-1].conf;
+                        }
+                        rte_actions->actions[cnt_idx].type = RTE_FLOW_ACTION_TYPE_QUEUE;
+                        rte_actions->actions[cnt_idx].conf = queue; // index = 0
+                        rte_actions->max++;
+                    } else {
+                        VLOG_ERR("failed to allocate queue struct for RTE_QUEUE action");
+                        goto error_exit;
+                    }
+                } else
+                    if (try == 1) {
+                        if (count_idx < 0) break; // No COUNT support
+                        /* remove COUNT */
+                        for (i = (count_idx + 1);i < rte_actions->max; i++) {
+                            rte_actions->actions[i - 1].type = rte_actions->actions[i].type;
+                            rte_actions->actions[i - 1].conf = rte_actions->actions[i].conf;
+                        }
+                        count_idx = -1;
+                        rte_actions->max--;
+                    }
+            }
+
+            if (flow_res != NULL) {
+                VLOG_INFO("Flow successfully offloaded. Handle %lx", (uint64_t)flow_res);
+               *flow_handle = (uint64_t)flow_res;
+
+               if (flow_stat_support)
+                   *flow_stat_support = (count_idx == 1)?1:0;
+
+            } else {
+                VLOG_ERR("RTE_FLOW CREATE ERROR: %i : Message : %s", error.type, error.message);
+                *flow_handle = (uint64_t)-1;
+            }
+        }
+
+error_exit:
+        if (flow) {
+            while (flow->max) {
+                flow->max--;
+                if (flow->items[flow->max].spec)
+                    rte_free((void *)flow->items[flow->max].spec);
+                if (flow->items[flow->max].mask)
+                    rte_free((void *)flow->items[flow->max].mask);
+            };
+            rte_free(flow);
+        }
+        if (rte_actions) {
+            while (rte_actions->max) {
+                rte_actions->max--;
+                if (rte_actions->actions[rte_actions->max].conf)
+                    rte_free((void *)rte_actions->actions[rte_actions->max].conf);
+            }
+            rte_free(rte_actions);
+        }
+
+    }
+    return 0;
+}
+
 
 static dpdk_port_t
 netdev_dpdk_process_devargs(struct netdev_dpdk *dev,
@@ -1262,9 +1905,26 @@ netdev_dpdk_set_config(struct netdev *netdev, const struct smap *args,
     };
     const char *new_devargs;
     int err = 0;
+    int hw_port_id = smap_get_int(args, "hw-port-id", -1);
+    uint32_t odp_port_no = smap_get_int(args, "odp_port_no", -1);
 
     ovs_mutex_lock(&dpdk_mutex);
     ovs_mutex_lock(&dev->mutex);
+
+    if (hw_port_id != -1)
+        dev->hw_port_id = hw_port_id;
+
+    if ((odp_port_no < (uint32_t)-1)) {
+            dev->odp_port_no = (uint16_t)odp_port_no;
+
+        if (dev->hw_port_id != -1) {
+            dev->hw_offload = true;
+            VLOG_INFO("HW OFFLOAD ready on device (%s) : hw-port-id <-> odp-port-id  %i <-> %i\n", netdev->name, dev->hw_port_id, dev->odp_port_no);
+        }
+        ovs_mutex_unlock(&dev->mutex);
+        ovs_mutex_unlock(&dpdk_mutex);
+        return 0;
+    }
 
     dpdk_set_rxq_config(dev, args);
 
@@ -1645,6 +2305,42 @@ netdev_dpdk_vhost_rxq_recv(struct netdev_rxq *rxq,
 
     batch->count = (int) nb_rx;
     return 0;
+}
+
+
+static int
+netdev_dpdk_get_flow_stats(struct netdev_rxq *rxq, struct netdev_flow_stats *flow_stats)
+{
+    struct netdev_dpdk *dev = netdev_dpdk_cast(rxq->netdev);
+	struct rte_flow_query_count qry_cnt;
+	struct rte_flow_error error;
+
+	if (!dev->hw_offload) return EOPNOTSUPP;
+
+	int res = 0;
+	int i;
+	int port_id = dev->port_id;
+
+	for (i = 0; i < flow_stats->num; i++) {
+		qry_cnt.reset = 1;
+
+		res = rte_flow_query(port_id,
+				(struct rte_flow *)flow_stats->flow_stat[i].flow_id,
+				RTE_FLOW_ACTION_TYPE_COUNT,
+				&qry_cnt,
+				&error);
+
+		if (res == 0) {
+			flow_stats->flow_stat[i].packets = qry_cnt.hits_set?qry_cnt.hits:0;
+			flow_stats->flow_stat[i].bytes = qry_cnt.bytes_set?qry_cnt.bytes:0;
+		} else {
+			flow_stats->flow_stat[i].packets = 0;
+			flow_stats->flow_stat[i].bytes = 0;
+		}
+		flow_stats->flow_stat[i].errors = 0;
+	}
+
+	return 0;
 }
 
 static int
@@ -3313,7 +4009,8 @@ unlock:
                           SET_CONFIG, SET_TX_MULTIQ, SEND,    \
                           GET_CARRIER, GET_STATS,             \
                           GET_FEATURES, GET_STATUS,           \
-                          RECONFIGURE, RXQ_RECV)              \
+                          RECONFIGURE, RXQ_RECV,              \
+                          CLS_HW_OFFLOAD, FLOW_STATS)         \
 {                                                             \
     NAME,                                                     \
     true,                       /* is_pmd */                  \
@@ -3382,6 +4079,8 @@ unlock:
     NULL,                       /* rx_wait */                 \
     NULL,                       /* rxq_drain */               \
     NO_OFFLOAD_API                                            \
+    CLS_HW_OFFLOAD,                                           \
+    FLOW_STATS,	                                              \
 }
 
 static const struct netdev_class dpdk_class =
@@ -3398,7 +4097,9 @@ static const struct netdev_class dpdk_class =
         netdev_dpdk_get_features,
         netdev_dpdk_get_status,
         netdev_dpdk_reconfigure,
-        netdev_dpdk_rxq_recv);
+        netdev_dpdk_rxq_recv,
+        netdev_dpdk_hw_flow_offload,
+        netdev_dpdk_get_flow_stats);
 
 static const struct netdev_class dpdk_ring_class =
     NETDEV_DPDK_CLASS(
@@ -3414,7 +4115,9 @@ static const struct netdev_class dpdk_ring_class =
         netdev_dpdk_get_features,
         netdev_dpdk_get_status,
         netdev_dpdk_reconfigure,
-        netdev_dpdk_rxq_recv);
+        netdev_dpdk_rxq_recv,
+        NULL,
+        NULL);
 
 static const struct netdev_class dpdk_vhost_class =
     NETDEV_DPDK_CLASS(
@@ -3430,7 +4133,10 @@ static const struct netdev_class dpdk_vhost_class =
         NULL,
         NULL,
         netdev_dpdk_vhost_reconfigure,
-        netdev_dpdk_vhost_rxq_recv);
+        netdev_dpdk_vhost_rxq_recv,
+        NULL,
+        NULL);
+
 static const struct netdev_class dpdk_vhost_client_class =
     NETDEV_DPDK_CLASS(
         "dpdkvhostuserclient",
@@ -3445,7 +4151,9 @@ static const struct netdev_class dpdk_vhost_client_class =
         NULL,
         NULL,
         netdev_dpdk_vhost_client_reconfigure,
-        netdev_dpdk_vhost_rxq_recv);
+        netdev_dpdk_vhost_rxq_recv,
+        NULL,
+        NULL);
 
 void
 netdev_dpdk_register(void)

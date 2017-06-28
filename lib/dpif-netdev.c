@@ -78,6 +78,8 @@
 #include "unixctl.h"
 #include "util.h"
 
+#include "netdev-hw-offload.h"
+
 VLOG_DEFINE_THIS_MODULE(dpif_netdev);
 
 #define FLOW_DUMP_MAX_BATCH 50
@@ -117,6 +119,8 @@ static struct odp_support dp_netdev_support = {
     .ct_orig_tuple = true,
     .ct_orig_tuple6 = true,
 };
+
+static odp_port_t hw_local_port_map[MAX_HW_PORT_CNT];
 
 /* Stores a miniflow with inline values */
 
@@ -175,7 +179,7 @@ struct emc_cache {
          (CURRENT_ENTRY) = &(EMC)->entries[srch_hash__ & EM_FLOW_HASH_MASK], \
          i__ < EM_FLOW_HASH_SEGS;                                            \
          i__++, srch_hash__ >>= EM_FLOW_HASH_SHIFT)
-
+
 /* Simple non-wildcarding single-priority classifier. */
 
 /* Time in ms between successive optimizations of the dpcls subtable vector */
@@ -206,7 +210,7 @@ static bool dpcls_lookup(struct dpcls *cls,
                          const struct netdev_flow_key keys[],
                          struct dpcls_rule **rules, size_t cnt,
                          int *num_lookups_p);
-
+
 /* Set of supported meter flags */
 #define DP_SUPPORTED_METER_FLAGS_MASK \
     (OFPMF13_STATS | OFPMF13_PKTPS | OFPMF13_KBPS | OFPMF13_BURST)
@@ -231,6 +235,10 @@ struct dp_meter {
     uint64_t byte_count;
     struct dp_meter_band bands[];
 };
+
+static void dp_netdev_flow_used(struct dp_netdev_flow *netdev_flow,
+						int cnt, int size,
+						uint16_t tcp_flags, long long now);
 
 /* Datapath based on the network device interface from netdev.h.
  *
@@ -366,6 +374,9 @@ struct dp_netdev_port {
     struct ovs_mutex txq_used_mutex;
     char *type;                 /* Port type as requested by user. */
     char *rxq_affinity_list;    /* Requested affinity of rx queues. */
+
+    uint32_t hw_port_id;
+    time_t sec;
 };
 
 /* Contained by struct dp_netdev_flow's 'stats' member.  */
@@ -686,6 +697,11 @@ static int dpif_netdev_xps_get_tx_qid(const struct dp_netdev_pmd_thread *pmd,
 static inline bool emc_entry_alive(struct emc_entry *ce);
 static void emc_clear_entry(struct emc_entry *ce);
 
+static struct tx_port *
+pmd_send_port_cache_lookup(const struct dp_netdev_pmd_thread *pmd,
+                           odp_port_t port_no);
+
+
 static void
 emc_cache_init(struct emc_cache *flow_cache)
 {
@@ -742,7 +758,7 @@ get_dp_netdev(const struct dpif *dpif)
 {
     return dpif_netdev_cast(dpif)->dp;
 }
-
+
 enum pmd_info_type {
     PMD_INFO_SHOW_STATS,  /* Show how cpu cycles are spent. */
     PMD_INFO_CLEAR_STATS, /* Set the cycles count to 0. */
@@ -1039,10 +1055,11 @@ dpif_netdev_pmd_info(struct unixctl_conn *conn, int argc, const char *argv[],
     unixctl_command_reply(conn, ds_cstr(&reply));
     ds_destroy(&reply);
 }
-
+
 static int
 dpif_netdev_init(void)
 {
+    int i;
     static enum pmd_info_type show_aux = PMD_INFO_SHOW_STATS,
                               clear_aux = PMD_INFO_CLEAR_STATS,
                               poll_aux = PMD_INFO_SHOW_RXQ;
@@ -1056,6 +1073,10 @@ dpif_netdev_init(void)
     unixctl_command_register("dpif-netdev/pmd-rxq-show", "[dp]",
                              0, 1, dpif_netdev_pmd_info,
                              (void *)&poll_aux);
+
+    for (i = 0; i < MAX_HW_PORT_CNT; i++) {
+        hw_local_port_map[i] = OVS_BE32_MAX;
+    }
     return 0;
 }
 
@@ -1500,6 +1521,28 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
         return error;
     }
 
+    if (netdev_is_pmd(port->netdev)) {
+        struct smap netdev_args;
+
+        smap_init(&netdev_args);
+        netdev_get_config(port->netdev, &netdev_args);
+        port->hw_port_id = smap_get_int(&netdev_args, "hw-port-id", (int)(MAX_HW_PORT_CNT + 1));
+        smap_destroy(&netdev_args);
+
+        VLOG_DBG("ADD PORT (%s) has hw-port-id %i, odp_port_id %i\n", devname, port->hw_port_id, port_no);
+
+        if (port->hw_port_id <= MAX_HW_PORT_CNT) {
+            hw_local_port_map[port->hw_port_id] = port_no;
+            /* Inform back to netdev driver the actual selected ODP port number */
+            smap_init(&netdev_args);
+        	smap_add_format(&netdev_args, "odp_port_no", "%lu", (long unsigned int)port_no);
+            netdev_set_config(port->netdev, &netdev_args, NULL);
+            smap_destroy(&netdev_args);
+        }
+    } else {
+    	port->hw_port_id = (int)(MAX_HW_PORT_CNT + 1);
+    }
+
     hmap_insert(&dp->ports, &port->node, hash_port_no(port_no));
     seq_change(dp->port_seq);
 
@@ -1773,6 +1816,13 @@ dp_netdev_pmd_remove_flow(struct dp_netdev_pmd_thread *pmd,
     dpcls_remove(cls, &flow->cr);
     cmap_remove(&pmd->flow_table, node, dp_netdev_flow_hash(&flow->ufid));
     flow->dead = true;
+
+    struct dp_netdev_port *port = dp_netdev_lookup_port(pmd->dp, in_port);
+	if (port->hw_port_id < MAX_HW_PORT_CNT) {
+	    VLOG_INFO("FLOW REMOVE -> in_port  %i (port name : %s, type : %s)\n", flow->flow.in_port.ofp_port, xstrdup(netdev_get_name(port->netdev)),
+	    		xstrdup(port->type));
+		netdev_try_hw_flow_offload(port->netdev, -1, NULL, &flow->ufid, NULL, 0);
+	}
 
     dp_netdev_flow_unref(flow);
 }
@@ -2351,6 +2401,19 @@ out:
     return error;
 }
 
+static void
+dp_netdev_try_hw_offload(struct dp_netdev_port *port, struct match *match,
+						  const ovs_u128 *ufid, const struct nlattr *actions,
+						  size_t actions_len)
+{
+	if (port->hw_port_id < MAX_HW_PORT_CNT) {
+        VLOG_INFO("FLOW ADD (try match) ->  in_port  %i (port name : %s, type : %s)\n", match->flow.in_port.ofp_port,
+                   xstrdup(netdev_get_name(port->netdev)), xstrdup(port->type));
+        netdev_try_hw_flow_offload(port->netdev, port->hw_port_id, match, ufid, actions, actions_len);
+    }
+}
+
+
 static struct dp_netdev_flow *
 dp_netdev_flow_add(struct dp_netdev_pmd_thread *pmd,
                    struct match *match, const ovs_u128 *ufid,
@@ -2400,6 +2463,10 @@ dp_netdev_flow_add(struct dp_netdev_pmd_thread *pmd,
 
     cmap_insert(&pmd->flow_table, CONST_CAST(struct cmap_node *, &flow->node),
                 dp_netdev_flow_hash(&flow->ufid));
+
+    /* Mega Flow entry added. Try do HW offload of this flow */
+    struct dp_netdev_port *port = dp_netdev_lookup_port(pmd->dp, in_port);
+    dp_netdev_try_hw_offload(port, match, ufid, actions, actions_len);
 
     if (OVS_UNLIKELY(!VLOG_DROP_DBG((&upcall_rl)))) {
         struct ds ds = DS_EMPTY_INITIALIZER;
@@ -2487,6 +2554,10 @@ flow_put_on_pmd(struct dp_netdev_pmd_thread *pmd,
 
             old_actions = dp_netdev_flow_get_actions(netdev_flow);
             ovsrcu_set(&netdev_flow->actions, new_actions);
+
+            /* Flow updated. Try offload to HW */
+            struct dp_netdev_port *port = dp_netdev_lookup_port(pmd->dp, match->flow.in_port.odp_port);
+            dp_netdev_try_hw_offload(port, match, &netdev_flow->ufid, put->actions, put->actions_len);
 
             if (stats) {
                 get_dpif_flow_stats(netdev_flow, stats);
@@ -3027,7 +3098,7 @@ dpif_netdev_queue_to_priority(const struct dpif *dpif OVS_UNUSED,
     return 0;
 }
 
-
+
 /* Creates and returns a new 'struct dp_netdev_actions', whose actions are
  * a copy of the 'size' bytes of 'actions' input parameters. */
 struct dp_netdev_actions *
@@ -3053,7 +3124,7 @@ dp_netdev_actions_free(struct dp_netdev_actions *actions)
 {
     free(actions);
 }
-
+
 static inline unsigned long long
 cycles_counter(void)
 {
@@ -3101,6 +3172,33 @@ cycles_count_intermediate(struct dp_netdev_pmd_thread *pmd,
     non_atomic_ullong_add(&pmd->cycles.n[type], interval);
 }
 
+
+
+static void _send_pre_classified_batch(const struct dp_netdev_pmd_thread *pmd, odp_port_t odp_port, struct dp_packet_batch *packets)
+{
+    struct tx_port *p;
+    p = pmd_send_port_cache_lookup(pmd, odp_port);
+    if (OVS_LIKELY(p)) {
+        int tx_qid;
+        bool dynamic_txqs;
+        long long int now = time_msec();
+
+        dynamic_txqs = p->port->dynamic_txqs;
+        if (dynamic_txqs) {
+            tx_qid = dpif_netdev_xps_get_tx_qid(pmd, p, now);
+        } else {
+            tx_qid = pmd->static_tx_qid;
+        }
+        netdev_send(p->port->netdev, tx_qid, packets, 1, dynamic_txqs);
+        return;
+    }
+    dp_packet_delete_batch(packets, 1);
+}
+
+
+static struct ovs_mutex stat_mutex = OVS_MUTEX_INITIALIZER;
+
+
 static int
 dp_netdev_process_rxq_port(struct dp_netdev_pmd_thread *pmd,
                            struct netdev_rxq *rx,
@@ -3110,12 +3208,101 @@ dp_netdev_process_rxq_port(struct dp_netdev_pmd_thread *pmd,
     int error;
     int batch_cnt = 0;
 
+    // Maybe move this functionality into pmd-thread main loop
+    struct dp_netdev_port *port = dp_netdev_lookup_port(pmd->dp, port_no);
+
     dp_packet_batch_init(&batch);
     error = netdev_rxq_recv(rx, &batch);
+    
+    cycles_count_end(pmd, PMD_CYCLES_POLLING);
+
+	if (port->hw_port_id < MAX_HW_PORT_CNT) {
+		struct netdev_flow_stats *flow_stats = NULL;
+		int i;
+		time_t a = time_now();
+		if (port->sec < a) {
+	        if (!ovs_mutex_trylock(&stat_mutex)) {
+				//printf("CHECK FOR STATS %08x for port %i\n", (long long unsigned)pmd, port->hw_port_id);
+                port->sec = a;
+
+                netdev_hw_get_stats_from_dev(rx, &flow_stats);
+
+                if (flow_stats) {
+                    static struct dp_netdev_flow *flow;
+                    long long now = time_msec();
+                    for (i = 0; i < flow_stats->num; i++) {
+                        if (flow_stats->flow_stat[i].packets) {
+                            /* Some statistics to update on from this flow */
+                            VLOG_DBG("Update stats with pkts %lu, bytes %lu, errors %lu, flow-id %lx\n",
+                                    flow_stats->flow_stat[i].packets, flow_stats->flow_stat[i].bytes,
+                                    flow_stats->flow_stat[i].errors, (long unsigned int)flow_stats->flow_stat[i].flow_id);
+
+                            flow = dp_netdev_pmd_find_flow(pmd, &flow_stats->flow_stat[i].ufid, NULL, 0);
+                            if (flow) {
+                                dp_netdev_flow_used(flow, flow_stats->flow_stat[i].packets, flow_stats->flow_stat[i].bytes, 0, now);
+                            }
+                        }
+                    }
+                    netdev_hw_free_stats_from_dev(rx, &flow_stats);
+                }
+                ovs_mutex_unlock(&stat_mutex);
+			}
+		}
+	}
+
+#define GET_ODP_OUT_PORT(id) (id & FLOW_ID_ODP_PORT_BIT)?\
+	id & FLOW_ID_PORT_MASK:((id & FLOW_ID_PORT_MASK) < FLOW_ID_PORT_MASK)?\
+	        hw_local_port_map[id & HW_PORT_MASK]:OVS_BE32_MAX;
+
     if (!error) {
-        *recirc_depth_get() = 0;
+
+        if (port->hw_port_id < MAX_HW_PORT_CNT) {
+            int i, ii;
+            struct dp_packet_batch direct_batch;
+            odp_port_t direct_odp_port = OVS_BE32_MAX;
+
+            dp_packet_batch_init(&direct_batch);
+
+            i = 0;
+            while (i < batch.count) {
+                uint32_t flow_id = dp_packet_get_pre_classified_flow_id(batch.packets[i]);
+                if (flow_id != (uint32_t)-1) {
+                    odp_port_t odp_out_port = GET_ODP_OUT_PORT(flow_id);
+
+                    if (odp_out_port < OVS_BE32_MAX) {
+                        if (direct_batch.count && direct_odp_port != odp_out_port) {
+                            /* Check if SW flow statistics update in hw-offload is needed - only if hw cannot give flow stats */
+                            netdev_update_flow_stats(rx, &direct_batch);
+                            _send_pre_classified_batch(pmd, direct_odp_port, &direct_batch);
+                            direct_batch.count = 0;
+                        }
+                        direct_odp_port = odp_out_port;
+                        direct_batch.packets[direct_batch.count++] = batch.packets[i];
+
+                        for (ii = i+1; ii < batch.count; ii++) {
+                            batch.packets[ii-1] = batch.packets[ii];
+                        }
+                        batch.count--;
+                        continue;
+                    }
+                }
+                i++;
+            }
+
+            if (direct_batch.count) {
+                //VLOG_INFO("Tx directly from Port (odp) %i to %i, num %i, left %i\n", port_no, direct_odp_port, direct_batch.count, batch.count);
+                /* Check if SW flow statistics update in hw-offload is needed - only if hw cannot give flow stats */
+                netdev_update_flow_stats(rx, &direct_batch);
+                _send_pre_classified_batch(pmd, direct_odp_port, &direct_batch);
+            }
+
+            if (!batch.count) return 0;
+        }
 
         batch_cnt = batch.count;
+
+        *recirc_depth_get() = 0;
+        cycles_count_start(pmd);
         dp_netdev_input(pmd, &batch, port_no);
     } else if (error != EAGAIN && error != EOPNOTSUPP) {
         static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
@@ -4497,7 +4684,7 @@ dp_netdev_del_port_tx_from_pmd(struct dp_netdev_pmd_thread *pmd,
     free(tx);
     pmd->need_reload = true;
 }
-
+
 static char *
 dpif_netdev_get_datapath_version(void)
 {
@@ -4929,12 +5116,12 @@ dp_netdev_input__(struct dp_netdev_pmd_thread *pmd,
 
     /* All the flow batches need to be reset before any call to
      * packet_batch_per_flow_execute() as it could potentially trigger
-     * recirculation. When a packet matching flow ‘j’ happens to be
+     * recirculation. When a packet matching flow  happens to be
      * recirculated, the nested call to dp_netdev_input__() could potentially
      * classify the packet as matching another flow - say 'k'. It could happen
      * that in the previous call to dp_netdev_input__() that same flow 'k' had
      * already its own batches[k] still waiting to be served.  So if its
-     * ‘batch’ member is not reset, the recirculated packet would be wrongly
+     * batch member is not reset, the recirculated packet would be wrongly
      * appended to batches[k] of the 1st call to dp_netdev_input__(). */
     size_t i;
     for (i = 0; i < n_batches; i++) {
@@ -5639,7 +5826,7 @@ dpif_dummy_register(enum dummy_level level)
                              "dp port new-number",
                              3, 3, dpif_dummy_change_port_number, NULL);
 }
-
+
 /* Datapath Classifier. */
 
 /* A set of rules that all have the same fields wildcarded. */

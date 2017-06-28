@@ -26,7 +26,13 @@
 #include "packets.h"
 #include "seq.h"
 #include "openvswitch/shash.h"
+#include "openvswitch/thread.h"
 #include "smap.h"
+
+
+
+#include "cmap.h"
+
 
 #ifdef  __cplusplus
 extern "C" {
@@ -78,7 +84,11 @@ struct netdev {
     int n_rxq;
     int ref_cnt;                        /* Times this devices was opened. */
     struct shash_node *node;            /* Pointer to element in global map. */
-    struct ovs_list saved_flags_list; /* Contains "struct netdev_saved_flags". */
+    struct ovs_list saved_flags_list;   /* Contains "struct netdev_saved_flags". */
+
+    struct cmap ufid_map;               /* Map of ufid to netdev HW filter ID */
+    int flow_stat_hw_support;           /* -1 not confirmed, 0 not supported, 1 supported */
+    struct ovs_mutex mutex;
 };
 
 static inline void
@@ -849,6 +859,13 @@ struct netdev_class {
     /* Initializies the netdev flow api.
      * Return 0 if successful, otherwise returns a positive errno value. */
     int (*init_flow_api)(struct netdev *);
+  
+    int (*hw_flow_offload)(struct netdev *netdev,
+                          const struct match *match, int hw_port_id,
+                          const struct nlattr *nl_actions, size_t actions_len,
+                          int *flow_stat_support, uint16_t flow_id,
+                          uint64_t *flow_handle);
+    int (*get_flow_stats)(struct netdev_rxq *rxq, struct netdev_flow_stats *flow_stats);
 };
 
 int netdev_register_provider(const struct netdev_class *);

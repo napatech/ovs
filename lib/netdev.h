@@ -139,6 +139,8 @@ int netdev_n_txq(const struct netdev *netdev);
 int netdev_n_rxq(const struct netdev *netdev);
 bool netdev_is_pmd(const struct netdev *netdev);
 bool netdev_has_tunnel_push_pop(const struct netdev *netdev);
+bool netdev_has_hw_flow_offload(const struct netdev *netdev);
+
 
 /* Open and close. */
 int netdev_open(const char *name, const char *type, struct netdev **netdevp);
@@ -312,6 +314,22 @@ struct netdev_queue_stats {
     long long int created;
 };
 
+
+struct flow_stat_elem {
+	ovs_u128 ufid;
+	void    *flow_id;  // hw returned flow-id
+	uint64_t bytes;
+	uint64_t packets;
+	uint64_t errors;
+};
+
+
+struct netdev_flow_stats {
+	size_t num;
+	struct flow_stat_elem flow_stat[0];
+};
+
+
 int netdev_set_policing(struct netdev *, uint32_t kbits_rate,
                         uint32_t kbits_burst);
 
@@ -334,6 +352,20 @@ int netdev_set_queue(struct netdev *,
 int netdev_delete_queue(struct netdev *, unsigned int queue_id);
 int netdev_get_queue_stats(const struct netdev *, unsigned int queue_id,
                            struct netdev_queue_stats *);
+
+bool
+netdev_get_flow_stats_supported(struct netdev_rxq *rx);
+
+int netdev_hw_flow_offload(struct netdev *netdev,
+        const struct match *match, int hw_port_id,
+        const struct nlattr *nl_actions, size_t actions_len,
+        int *flow_stat_support, uint16_t flow_id,
+        uint64_t *flow_handle);
+
+int netdev_get_flow_stats(struct netdev_rxq *rx,
+					struct netdev_flow_stats *flow_stats);
+
+
 uint64_t netdev_get_change_seq(const struct netdev *);
 
 int netdev_reconfigure(struct netdev *netdev);
