@@ -2831,6 +2831,8 @@ netdev_linux_update_flags(struct netdev *netdev_, enum netdev_flags off,
     netdev_linux_rxq_recv,                                      \
     netdev_linux_rxq_wait,                                      \
     netdev_linux_rxq_drain,                                     \
+    NULL,                      /* hw_flow_offload */            \
+    NULL,                      /* get_flow_stats */             \
 }
 
 const struct netdev_class netdev_linux_class =

@@ -377,6 +377,10 @@ netdev_open(const char *name, const char *type, struct netdev **netdevp)
 
                 ovs_list_init(&netdev->saved_flags_list);
 
+                cmap_init(&netdev->ufid_map);
+                netdev->flow_stat_hw_support = -1;
+                ovs_mutex_init(&netdev->mutex);
+
                 error = rc->class->construct(netdev);
                 if (!error) {
                     netdev_change_seq_changed(netdev);
@@ -1716,7 +1720,51 @@ netdev_dump_queue_stats(const struct netdev *netdev,
             : EOPNOTSUPP);
 }
 
-
+
+bool
+netdev_get_flow_stats_supported(struct netdev_rxq *rx)
+{
+    return (rx->netdev->netdev_class->get_flow_stats
+            ? true
+            : false);
+}
+
+
+bool
+netdev_has_hw_flow_offload(const struct netdev *netdev)
+{
+    return netdev->netdev_class->hw_flow_offload?1:0;
+}
+
+int
+netdev_hw_flow_offload(struct netdev *netdev,
+        const struct match *match, int hw_port_id,
+        const struct nlattr *nl_actions, size_t actions_len,
+        int *flow_stat_support, uint16_t flow_id,
+        uint64_t *flow_handle)
+{
+    const struct netdev_class *class = netdev->netdev_class;
+    return (class->hw_flow_offload
+            ? class->hw_flow_offload(netdev,
+                                    match, hw_port_id,
+                                    nl_actions, actions_len,
+                                    flow_stat_support, flow_id,
+                                    flow_handle)
+            : EOPNOTSUPP);
+}
+
+
+int
+netdev_get_flow_stats(struct netdev_rxq *rx,
+		struct netdev_flow_stats *flow_stats)
+{
+    const struct netdev_class *class = rx->netdev->netdev_class;
+    return (class->get_flow_stats
+            ? class->get_flow_stats(rx, flow_stats)
+            : EOPNOTSUPP);
+}
+
+
 /* Returns the class type of 'netdev'.
  *
  * The caller must not free the returned value. */

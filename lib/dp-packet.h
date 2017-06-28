@@ -608,6 +608,19 @@ dp_packet_ip_checksum_valid(struct dp_packet *p)
 #endif
 }
 
+static inline uint32_t
+dp_packet_get_pre_classified_flow_id(struct dp_packet *p)
+{
+#ifdef DPDK_NETDEV
+    if (p->mbuf.ol_flags & PKT_RX_FDIR_ID) {
+        return p->mbuf.hash.fdir.hi;
+    }
+#else
+    p = p;
+#endif
+    return (uint32_t)-1;
+}
+
 static inline bool
 dp_packet_l4_checksum_valid(struct dp_packet *p)
 {

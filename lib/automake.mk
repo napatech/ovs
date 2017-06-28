@@ -137,6 +137,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/netdev-vport-private.h \
 	lib/netdev.c \
 	lib/netdev.h \
+	lib/netdev-hw-offload.c \
+	lib/netdev-hw-offload.h \
 	lib/netflow.h \
 	lib/netlink.c \
 	lib/netlink.h \
