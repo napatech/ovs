@@ -101,15 +101,6 @@
       address <code>unknown</code>.
     </p>
 
-    <column name="name">
-      <p>
-        A name for the logical switch.  This name has no special meaning or purpose
-        other than to provide convenience for human interaction with the ovn-nb
-        database.  There is no requirement for the name to be unique.  The
-        logical switch's UUID should be used as the unique identifier.
-      </p>
-    </column>
-
     <column name="ports">
       <p>
         The logical ports connected to the logical switch.
@@ -133,6 +124,39 @@
     <column name="qos_rules">
       QOS marking rules that apply to packets within the logical switch.
     </column>
+
+    <column name="dns_records">
+      This column defines the DNS records to be used for resolving internal
+      DNS queries within the logical switch by the native DNS resolver.
+      Please see the <ref table="DNS"/> table.
+    </column>
+
+    <group title="Naming">
+      <p>
+        These columns provide names for the logical switch.  From OVN's
+        perspective, these names have no special meaning or purpose other than
+        to provide convenience for human interaction with the  database.
+        There is no requirement for the name to be unique.  (For a unique
+        identifier for a logical switch, use its row UUID.)
+      </p>
+
+      <p>
+        (Originally, <ref column="name"/> was intended to serve the purpose of
+        a human-friendly name, but the Neutron integration used it to uniquely
+        identify its own switch object, in the format
+        <code>neutron-<var>uuid</var></code>.  Later on, Neutron started
+        propagating the friendly name of a switch as <ref column="external_ids"
+        key="neutron:network_name"/>.  Perhaps this can be cleaned up someday.)
+      </p>
+
+      <column name="name">
+        A name for the logical switch.
+      </column>
+
+      <column name="external_ids" key="neutron:network_name">
+        Another name for the logical switch.
+      </column>
+    </group>
 
     <group title="IP Address Assignment">
       <p>
@@ -257,6 +281,15 @@
             <code>ovn-controller</code> instance.  A logical switch can only
             have a single <code>localnet</code> port attached.  This is used
             to model direct connectivity to an existing network.
+          </dd>
+
+          <dt><code>localport</code></dt>
+          <dd>
+            A connection to a local VIF. Traffic that arrives on a
+            <code>localport</code> is never forwarded over a tunnel to another
+            chassis. These ports are present on every chassis and have the same
+            address in all of them. This is used to model connectivity to local
+            services that run on every hypervisor.
           </dd>
 
           <dt><code>l2gateway</code></dt>
@@ -783,7 +816,7 @@
       </column>
     </group>
 
-    <group title="Common Columns">
+    <group title="DHCP">
       <column name="dhcpv4_options">
         This column defines the DHCPv4 Options to be included by the
         <code>ovn-controller</code> when it replies to the DHCPv4 requests.
@@ -795,9 +828,36 @@
         <code>ovn-controller</code> when it replies to the DHCPv6 requests.
         Please see the <ref table="DHCP_Options"/> table.
       </column>
+    </group>
 
+    <group title="Naming">
+      <column name="external_ids" key="neutron:port_name">
+        <p>
+          This column gives an optional human-friendly name for the port.  This
+          name has no special meaning or purpose other than to provide
+          convenience for human interaction with the northbound database.
+        </p>
+
+        <p>
+          Neutron copies this from its own port object's name.  (Neutron ports
+          do are not assigned human-friendly names by default, so it will often
+          be empty.)
+        </p>
+      </column>
+    </group>
+
+    <group title="Common Columns">
       <column name="external_ids">
-        See <em>External IDs</em> at the beginning of this document.
+        <p>
+          See <em>External IDs</em> at the beginning of this document.
+        </p>
+
+        <p>
+          The <code>ovn-northd</code> program copies all these pairs into the
+          <ref column="external_ids"/> column of the
+          <ref table="Port_Binding"/> table in <ref db="OVN_Southbound"/>
+          database.
+        </p>
       </column>
     </group>
   </table>
@@ -1006,15 +1066,6 @@
       Each row represents one L3 logical router.
     </p>
 
-    <column name="name">
-      <p>
-        A name for the logical router.  This name has no special meaning or purpose
-        other than to provide convenience for human interaction with the ovn-nb
-        database.  There is no requirement for the name to be unique.  The
-        logical router's UUID should be used as the unique identifier.
-      </p>
-    </column>
-
     <column name="ports">
       The router's ports.
     </column>
@@ -1040,6 +1091,33 @@
       Load balance a virtual ipv4 address to a set of logical port ipv4
       addresses.  Load balancer rules only work on the Gateway routers.
     </column>
+
+    <group title="Naming">
+      <p>
+        These columns provide names for the logical router.  From OVN's
+        perspective, these names have no special meaning or purpose other than
+        to provide convenience for human interaction with the northbound
+        database.  There is no requirement for the name to be unique.  (For a
+        unique identifier for a logical router, use its row UUID.)
+      </p>
+
+      <p>
+        (Originally, <ref column="name"/> was intended to serve the purpose of
+        a human-friendly name, but the Neutron integration used it to uniquely
+        identify its own router object, in the format
+        <code>neutron-<var>uuid</var></code>.  Later on, Neutron started
+        propagating the friendly name of a router as <ref column="external_ids"
+        key="neutron:router_name"/>.  Perhaps this can be cleaned up someday.)
+      </p>
+
+      <column name="name">
+        A name for the logical router.
+      </column>
+
+      <column name="external_ids" key="neutron:router_name">
+        Another name for the logical router.
+      </column>
+    </group>
 
     <group title="Options">
       <p>
@@ -1079,7 +1157,7 @@
           If set, indicates the IP address to use to force SNAT a packet
           that has already been load-balanced in the gateway router.  When
           multiple gateway routers are configured, a packet can potentially
-          enter any of the gateway router, get DNATted as part of the load-
+          enter any of the gateway routers, get DNATted as part of the load-
           balancing and eventually reach the logical switch port.
           For the return traffic to go back to the same gateway router (for
           unDNATing), the packet needs a SNAT in the first place.  This can be
@@ -1166,8 +1244,8 @@
 
       <p>
         In addition to provide convenience for human interaction with the
-        ovn-nb database, this column is used as reference by its patch port in
-        <ref table="Logical_Switch_Port"/> or another logical router port in
+        northbound database, this column is used as reference by its patch port
+        in <ref table="Logical_Switch_Port"/> or another logical router port in
         <ref table="Logical_Router_Port"/>.
       </p>
     </column>
@@ -1474,7 +1552,7 @@
         <column name="options" key="lease_time"
                 type='{"type": "integer", "minInteger": 0, "maxInteger": 4294967295}'>
           <p>
-            The offered lease time in seconds, 
+            The offered lease time in seconds,
           </p>
 
           <p>
@@ -1966,6 +2044,24 @@
       <column name="other_config"/>
     </group>
   </table>
+  <table name="DNS" title="Native DNS resolution">
+    <p>
+      Each row in this table stores the DNS records. The
+      <ref table="Logical_Switch"/> table's <ref table="Logical_Switch"
+      column="dns_records"/> references these records.
+    </p>
+
+    <column name="records">
+      Key-value pair of DNS records with <code>DNS query name</code> as the key
+      and value as a string of IP address(es) separated by comma or space.
+
+      <p><b>Example: </b> "vm1.ovn.org" = "10.0.0.4 aef0::4"</p>
+    </column>
+
+    <column name="external_ids">
+      See <em>External IDs</em> at the beginning of this document.
+    </column>
+  </table>
   <table name="SSL">
     SSL configuration for ovn-nb database access.
 
@@ -1997,6 +2093,17 @@
       CA certificate.</em>  It may still be useful for bootstrapping.
     </column>
 
+    <column name="ssl_protocols">
+      List of SSL protocols to be enabled for SSL connections. The default
+      when this option is omitted is <code>TLSv1,TLSv1.1,TLSv1.2</code>.
+    </column>
+
+    <column name="ssl_ciphers">
+      List of ciphers (in OpenSSL cipher string format) to be supported
+      for SSL connections. The default when this option is omitted is
+      <code>HIGH:!aNULL:!MD5</code>.
+    </column>
+
     <group title="Common Columns">
       The overall purpose of these columns is described under <code>Common
       Columns</code> at the beginning of this document.
@@ -2004,5 +2111,4 @@
       <column name="external_ids"/>
     </group>
   </table>
-
 </database>

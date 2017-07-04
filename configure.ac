@@ -67,7 +67,7 @@ m4_pattern_forbid([LT_INIT]) dnl Make autoconf fail if libtool is missing.
 #    the new version. This is the case when symbols have been modified or
 #    deleted. Bump current, set revision and age to 0.
 
-m4_define([libopenvswitch_lt_current],    [1])
+m4_define([libopenvswitch_lt_current],    [0])
 m4_define([libopenvswitch_lt_revision],   [0])
 m4_define([libopenvswitch_lt_age],        [0])
 
@@ -174,6 +174,7 @@ OVS_ENABLE_SPARSE
 AC_ARG_VAR(KARCH, [Kernel Architecture String])
 AC_SUBST(KARCH)
 OVS_CHECK_LINUX
+OVS_CHECK_LINUX_TC
 OVS_CHECK_DPDK
 OVS_CHECK_PRAGMA_MESSAGE
 AC_SUBST([OVS_CFLAGS])

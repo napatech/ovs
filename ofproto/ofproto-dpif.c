@@ -139,7 +139,6 @@ struct ofport_dpif {
     struct lldp *lldp;          /* lldp, if any. */
     bool may_enable;            /* May be enabled in bonds. */
     bool is_tunnel;             /* This port is a tunnel. */
-    bool is_layer3;             /* This is a layer 3 port. */
     long long int carrier_seq;  /* Carrier status changes. */
     struct ofport_dpif *peer;   /* Peer if patch port. */
 
@@ -645,7 +644,7 @@ dealloc(struct ofproto *ofproto_)
 }
 
 static void
-close_dpif_backer(struct dpif_backer *backer)
+close_dpif_backer(struct dpif_backer *backer, bool del)
 {
     ovs_assert(backer->refcount > 0);
 
@@ -661,7 +660,11 @@ close_dpif_backer(struct dpif_backer *backer)
     shash_find_and_delete(&all_dpif_backers, backer->type);
     free(backer->type);
     free(backer->dp_version_string);
+    if (del) {
+        dpif_delete(backer->dpif);
+    }
     dpif_close(backer->dpif);
+    id_pool_destroy(backer->meter_ids);
     free(backer);
 }
 
@@ -772,7 +775,7 @@ open_dpif_backer(const char *type, struct dpif_backer **backerp)
     if (error) {
         VLOG_ERR("failed to listen on datapath of type %s: %s",
                  type, ovs_strerror(error));
-        close_dpif_backer(backer);
+        close_dpif_backer(backer, false);
         return error;
     }
 
@@ -786,6 +789,15 @@ open_dpif_backer(const char *type, struct dpif_backer **backerp)
     backer->support.variable_length_userdata
         = check_variable_length_userdata(backer);
     backer->dp_version_string = dpif_get_dp_version(backer->dpif);
+
+    /* Manage Datapath meter IDs if supported. */
+    struct ofputil_meter_features features;
+    dpif_meter_get_features(backer->dpif, &features);
+    if (features.max_meters) {
+        backer->meter_ids = id_pool_create(0, features.max_meters);
+    } else {
+        backer->meter_ids = NULL;
+    }
 
     return error;
 }
@@ -1241,7 +1253,69 @@ check_clone(struct dpif_backer *backer)
     return !error;
 }
 
-#define CHECK_FEATURE__(NAME, SUPPORT, FIELD, VALUE)                        \
+/* Tests whether 'backer''s datapath supports the OVS_CT_ATTR_EVENTMASK
+ * attribute in OVS_ACTION_ATTR_CT. */
+static bool
+check_ct_eventmask(struct dpif_backer *backer)
+{
+    struct dpif_execute execute;
+    struct dp_packet packet;
+    struct ofpbuf actions;
+    struct flow flow = {
+        .dl_type = CONSTANT_HTONS(ETH_TYPE_IP),
+        .nw_proto = IPPROTO_UDP,
+        .nw_ttl = 64,
+        /* Use the broadcast address on the loopback address range 127/8 to
+         * avoid hitting any real conntrack entries.  We leave the UDP ports to
+         * zeroes for the same purpose. */
+        .nw_src = CONSTANT_HTONL(0x7fffffff),
+        .nw_dst = CONSTANT_HTONL(0x7fffffff),
+    };
+    size_t ct_start;
+    int error;
+
+    /* Compose CT action with eventmask attribute and check if datapath can
+     * decode the message.  */
+    ofpbuf_init(&actions, 64);
+    ct_start = nl_msg_start_nested(&actions, OVS_ACTION_ATTR_CT);
+    /* Eventmask has no effect without the commit flag, but currently the
+     * datapath will accept an eventmask even without commit.  This is useful
+     * as we do not want to persist the probe connection in the conntrack
+     * table. */
+    nl_msg_put_u32(&actions, OVS_CT_ATTR_EVENTMASK, ~0);
+    nl_msg_end_nested(&actions, ct_start);
+
+    /* Compose a dummy UDP packet. */
+    dp_packet_init(&packet, 0);
+    flow_compose(&packet, &flow);
+
+    /* Execute the actions.  On older datapaths this fails with EINVAL, on
+     * newer datapaths it succeeds. */
+    execute.actions = actions.data;
+    execute.actions_len = actions.size;
+    execute.packet = &packet;
+    execute.flow = &flow;
+    execute.needs_help = false;
+    execute.probe = true;
+    execute.mtu = 0;
+
+    error = dpif_execute(backer->dpif, &execute);
+
+    dp_packet_uninit(&packet);
+    ofpbuf_uninit(&actions);
+
+    if (error) {
+        VLOG_INFO("%s: Datapath does not support eventmask in conntrack action",
+                  dpif_name(backer->dpif));
+    } else {
+        VLOG_INFO("%s: Datapath supports eventmask in conntrack action",
+                  dpif_name(backer->dpif));
+    }
+
+    return !error;
+}
+
+#define CHECK_FEATURE__(NAME, SUPPORT, FIELD, VALUE, ETHTYPE)               \
 static bool                                                                 \
 check_##NAME(struct dpif_backer *backer)                                    \
 {                                                                           \
@@ -1258,6 +1332,7 @@ check_##NAME(struct dpif_backer *backer)                                    \
                                                                             \
     memset(&flow, 0, sizeof flow);                                          \
     flow.FIELD = VALUE;                                                     \
+    flow.dl_type = htons(ETHTYPE);                                          \
                                                                             \
     ofpbuf_use_stack(&key, &keybuf, sizeof keybuf);                         \
     odp_flow_key_from_flow(&odp_parms, &key);                               \
@@ -1272,14 +1347,16 @@ check_##NAME(struct dpif_backer *backer)                                    \
                                                                             \
     return enable;                                                          \
 }
-#define CHECK_FEATURE(FIELD) CHECK_FEATURE__(FIELD, FIELD, FIELD, 1)
+#define CHECK_FEATURE(FIELD) CHECK_FEATURE__(FIELD, FIELD, FIELD, 1, \
+                                             ETH_TYPE_IP)
 
 CHECK_FEATURE(ct_state)
 CHECK_FEATURE(ct_zone)
 CHECK_FEATURE(ct_mark)
-CHECK_FEATURE__(ct_label, ct_label, ct_label.u64.lo, 1)
-CHECK_FEATURE__(ct_state_nat, ct_state, ct_state, CS_TRACKED|CS_SRC_NAT)
-CHECK_FEATURE__(ct_orig_tuple, ct_orig_tuple, ct_nw_proto, 1)
+CHECK_FEATURE__(ct_label, ct_label, ct_label.u64.lo, 1, ETH_TYPE_IP)
+CHECK_FEATURE__(ct_state_nat, ct_state, ct_state, \
+                CS_TRACKED|CS_SRC_NAT, ETH_TYPE_IP)
+CHECK_FEATURE__(ct_orig_tuple, ct_orig_tuple, ct_nw_proto, 1, ETH_TYPE_IP)
 
 #undef CHECK_FEATURE
 #undef CHECK_FEATURE__
@@ -1300,6 +1377,7 @@ check_support(struct dpif_backer *backer)
     backer->support.tnl_push_pop = dpif_supports_tnl_push_pop(backer->dpif);
     backer->support.clone = check_clone(backer);
     backer->support.sample_nesting = check_max_sample_nesting(backer);
+    backer->support.ct_eventmask = check_ct_eventmask(backer);
 
     /* Flow fields. */
     backer->support.odp.ct_state = check_ct_state(backer);
@@ -1452,7 +1530,7 @@ add_internal_flows(struct ofproto_dpif *ofproto)
 }
 
 static void
-destruct(struct ofproto *ofproto_)
+destruct(struct ofproto *ofproto_, bool del)
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
     struct ofproto_async_msg *am;
@@ -1505,7 +1583,7 @@ destruct(struct ofproto *ofproto_)
 
     seq_destroy(ofproto->ams_seq);
 
-    close_dpif_backer(ofproto->backer);
+    close_dpif_backer(ofproto->backer, del);
 }
 
 static int
@@ -1753,7 +1831,6 @@ port_construct(struct ofport *port_)
     port->qdscp = NULL;
     port->n_qdscp = 0;
     port->carrier_seq = netdev_get_carrier_resets(netdev);
-    port->is_layer3 = netdev_vport_is_layer3(netdev);
 
     if (netdev_vport_is_patch(netdev)) {
         /* By bailing out here, we don't submit the port to the sFlow module
@@ -2210,7 +2287,7 @@ rstp_send_bpdu_cb(struct dp_packet *pkt, void *ofport_, void *ofproto_)
 {
     struct ofproto_dpif *ofproto = ofproto_;
     struct ofport_dpif *ofport = ofport_;
-    struct eth_header *eth = dp_packet_l2(pkt);
+    struct eth_header *eth = dp_packet_eth(pkt);
 
     netdev_get_etheraddr(ofport->up.netdev, &eth->eth_src);
     if (eth_addr_is_zero(eth->eth_src)) {
@@ -2235,7 +2312,7 @@ send_bpdu_cb(struct dp_packet *pkt, int port_num, void *ofproto_)
         VLOG_WARN_RL(&rl, "%s: cannot send BPDU on unknown port %d",
                      ofproto->up.name, port_num);
     } else {
-        struct eth_header *eth = dp_packet_l2(pkt);
+        struct eth_header *eth = dp_packet_eth(pkt);
 
         netdev_get_etheraddr(ofport->up.netdev, &eth->eth_src);
         if (eth_addr_is_zero(eth->eth_src)) {
@@ -2498,6 +2575,34 @@ update_stp_port_state(struct ofport_dpif *ofport)
     }
 }
 
+static void
+stp_check_and_update_link_state(struct ofproto_dpif *ofproto)
+{
+    struct ofport_dpif *ofport;
+
+    HMAP_FOR_EACH (ofport, up.hmap_node, &ofproto->up.ports) {
+        bool up = netdev_get_carrier(ofport->up.netdev);
+
+        if (ofport->stp_port &&
+            up != (stp_port_get_state(ofport->stp_port) != STP_DISABLED)) {
+
+            VLOG_DBG("bridge %s, port %s is %s, %s it.",
+                     ofproto->up.name, netdev_get_name(ofport->up.netdev),
+                     up ? "up" : "down",
+                     up ? "enabling" : "disabling");
+
+            if (up) {
+                stp_port_enable(ofport->stp_port);
+                stp_port_set_aux(ofport->stp_port, ofport);
+            } else {
+                stp_port_disable(ofport->stp_port);
+            }
+
+            update_stp_port_state(ofport);
+        }
+    }
+}
+
 /* Configures STP on 'ofport_' using the settings defined in 's'.  The
  * caller is responsible for assigning STP port numbers and ensuring
  * there are no duplicates. */
@@ -2528,7 +2633,12 @@ set_stp_port(struct ofport *ofport_,
     /* Set name before enabling the port so that debugging messages can print
      * the name. */
     stp_port_set_name(sp, netdev_get_name(ofport->up.netdev));
-    stp_port_enable(sp);
+
+    if (netdev_get_carrier(ofport_->netdev)) {
+        stp_port_enable(sp);
+    } else {
+        stp_port_disable(sp);
+    }
 
     stp_port_set_aux(sp, ofport);
     stp_port_set_priority(sp, s->priority);
@@ -2590,6 +2700,9 @@ stp_run(struct ofproto_dpif *ofproto)
             stp_tick(ofproto->stp, MIN(INT_MAX, elapsed));
             ofproto->stp_last_tick = now;
         }
+
+        stp_check_and_update_link_state(ofproto);
+
         while (stp_get_changed_port(ofproto->stp, &sp)) {
             struct ofport_dpif *ofport = stp_port_get_aux(sp);
 
@@ -2646,7 +2759,7 @@ set_rstp_port(struct ofport *ofport_,
     rstp_port_set(rp, s->port_num, s->priority, s->path_cost,
                   s->admin_edge_port, s->auto_edge,
                   s->admin_p2p_mac_state, s->admin_port_state, s->mcheck,
-                  ofport);
+                  ofport, netdev_get_name(ofport->up.netdev));
     update_rstp_port_state(ofport);
     /* Synchronize operational status. */
     rstp_port_set_mac_operational(rp, ofport->may_enable);
@@ -2780,7 +2893,7 @@ bundle_update(struct ofbundle *bundle)
     bundle->floodable = true;
     LIST_FOR_EACH (port, bundle_node, &bundle->ports) {
         if (port->up.pp.config & OFPUTIL_PC_NO_FLOOD
-            || port->is_layer3
+            || netdev_get_pt_mode(port->up.netdev) == NETDEV_PT_LEGACY_L3
             || (bundle->ofproto->stp && !stp_forward_in_state(port->stp_state))
             || (bundle->ofproto->rstp && !rstp_forward_in_state(port->rstp_state))) {
             bundle->floodable = false;
@@ -2829,7 +2942,7 @@ bundle_add_port(struct ofbundle *bundle, ofp_port_t ofp_port,
         port->bundle = bundle;
         ovs_list_push_back(&bundle->ports, &port->bundle_node);
         if (port->up.pp.config & OFPUTIL_PC_NO_FLOOD
-            || port->is_layer3
+            || netdev_get_pt_mode(port->up.netdev) == NETDEV_PT_LEGACY_L3
             || (bundle->ofproto->stp && !stp_forward_in_state(port->stp_state))
             || (bundle->ofproto->rstp && !rstp_forward_in_state(port->rstp_state))) {
             bundle->floodable = false;
@@ -4901,7 +5014,7 @@ ofproto_unixctl_fdb_show(struct unixctl_conn *conn, int argc OVS_UNUSED,
         char name[OFP10_MAX_PORT_NAME_LEN];
 
         ofputil_port_to_string(ofbundle_get_a_port(bundle)->up.ofp_port,
-                               name, sizeof name);
+                               NULL, name, sizeof name);
         ds_put_format(&ds, "%5s  %4d  "ETH_ADDR_FMT"  %3d\n",
                       name, e->vlan, ETH_ADDR_ARGS(e->mac),
                       mac_entry_age(ofproto->ml, e));
@@ -4943,7 +5056,7 @@ ofproto_unixctl_mcast_snooping_show(struct unixctl_conn *conn,
 
             bundle = b->port;
             ofputil_port_to_string(ofbundle_get_a_port(bundle)->up.ofp_port,
-                                   name, sizeof name);
+                                   NULL, name, sizeof name);
             ds_put_format(&ds, "%5s  %4d  ", name, grp->vlan);
             ipv6_format_mapped(&grp->addr, &ds);
             ds_put_format(&ds, "         %3d\n",
@@ -4957,7 +5070,7 @@ ofproto_unixctl_mcast_snooping_show(struct unixctl_conn *conn,
 
         bundle = mrouter->port;
         ofputil_port_to_string(ofbundle_get_a_port(bundle)->up.ofp_port,
-                               name, sizeof name);
+                               NULL, name, sizeof name);
         ds_put_format(&ds, "%5s  %4d  querier             %3d\n",
                       name, mrouter->vlan,
                       mcast_mrouter_age(ofproto->ms, mrouter));
@@ -5127,11 +5240,6 @@ ofproto_unixctl_dpif_dump_flows(struct unixctl_conn *conn,
     const struct ofproto_dpif *ofproto;
 
     struct ds ds = DS_EMPTY_INITIALIZER;
-    bool verbosity = false;
-
-    struct dpif_port dpif_port;
-    struct dpif_port_dump port_dump;
-    struct hmap portno_names;
 
     struct dpif_flow_dump *flow_dump;
     struct dpif_flow_dump_thread *flow_dump_thread;
@@ -5144,17 +5252,39 @@ ofproto_unixctl_dpif_dump_flows(struct unixctl_conn *conn,
         return;
     }
 
-    if (argc > 2 && !strcmp(argv[1], "-m")) {
-        verbosity = true;
+    bool verbosity = false;
+    bool names = false;
+    bool set_names = false;
+    for (int i = 1; i < argc - 1; i++) {
+        if (!strcmp(argv[i], "-m")) {
+            verbosity = true;
+        } else if (!strcmp(argv[i], "--names")) {
+            names = true;
+            set_names = true;
+        } else if (!strcmp(argv[i], "--no-names")) {
+            names = false;
+            set_names = true;
+        }
+    }
+    if (!set_names) {
+        names = verbosity;
     }
 
-    hmap_init(&portno_names);
-    DPIF_PORT_FOR_EACH (&dpif_port, &port_dump, ofproto->backer->dpif) {
-        odp_portno_names_set(&portno_names, dpif_port.port_no, dpif_port.name);
+    struct hmap *portno_names = NULL;
+    if (names) {
+        portno_names = xmalloc(sizeof *portno_names);
+        hmap_init(portno_names);
+
+        struct dpif_port dpif_port;
+        struct dpif_port_dump port_dump;
+        DPIF_PORT_FOR_EACH (&dpif_port, &port_dump, ofproto->backer->dpif) {
+            odp_portno_names_set(portno_names, dpif_port.port_no,
+                                 dpif_port.name);
+        }
     }
 
     ds_init(&ds);
-    flow_dump = dpif_flow_dump_create(ofproto->backer->dpif, false);
+    flow_dump = dpif_flow_dump_create(ofproto->backer->dpif, false, NULL);
     flow_dump_thread = dpif_flow_dump_thread_create(flow_dump);
     while (dpif_flow_dump_next(flow_dump_thread, &f, 1)) {
         struct flow flow;
@@ -5169,11 +5299,11 @@ ofproto_unixctl_dpif_dump_flows(struct unixctl_conn *conn,
             ds_put_cstr(&ds, " ");
         }
         odp_flow_format(f.key, f.key_len, f.mask, f.mask_len,
-                        &portno_names, &ds, verbosity);
+                        portno_names, &ds, verbosity);
         ds_put_cstr(&ds, ", ");
         dpif_flow_stats_format(&f.stats, &ds);
         ds_put_cstr(&ds, ", actions:");
-        format_odp_actions(&ds, f.actions, f.actions_len);
+        format_odp_actions(&ds, f.actions, f.actions_len, portno_names);
         ds_put_char(&ds, '\n');
     }
     dpif_flow_dump_thread_destroy(flow_dump_thread);
@@ -5186,8 +5316,11 @@ ofproto_unixctl_dpif_dump_flows(struct unixctl_conn *conn,
     } else {
         unixctl_command_reply(conn, ds_cstr(&ds));
     }
-    odp_portno_names_destroy(&portno_names);
-    hmap_destroy(&portno_names);
+    if (portno_names) {
+        odp_portno_names_destroy(portno_names);
+        hmap_destroy(portno_names);
+        free(portno_names);
+    }
     ds_destroy(&ds);
 }
 
@@ -5302,7 +5435,7 @@ ofproto_unixctl_init(void)
                              NULL);
     unixctl_command_register("dpif/show-dp-features", "bridge", 1, 1,
                              ofproto_unixctl_dpif_show_dp_features, NULL);
-    unixctl_command_register("dpif/dump-flows", "[-m] bridge", 1, 2,
+    unixctl_command_register("dpif/dump-flows", "[-m] [--names | --no-nmaes] bridge", 1, INT_MAX,
                              ofproto_unixctl_dpif_dump_flows, NULL);
 
     unixctl_command_register("ofproto/tnl-push-pop", "[on]|[off]", 1, 1,
@@ -5439,6 +5572,17 @@ meter_set(struct ofproto *ofproto_, ofproto_meter_id *meter_id,
 {
     struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
 
+    /* Provider ID unknown. Use backer to allocate a new DP meter */
+    if (meter_id->uint32 == UINT32_MAX) {
+        if (!ofproto->backer->meter_ids) {
+            return EFBIG; /* Datapath does not support meter.  */
+        }
+
+        if(!id_pool_alloc_id(ofproto->backer->meter_ids, &meter_id->uint32)) {
+            return ENOMEM; /* Can't allocate a DP meter. */
+        }
+    }
+
     switch (dpif_meter_set(ofproto->backer->dpif, meter_id, config)) {
     case 0:
         return 0;
@@ -5468,12 +5612,36 @@ meter_get(const struct ofproto *ofproto_, ofproto_meter_id meter_id,
     return OFPERR_OFPMMFC_UNKNOWN_METER;
 }
 
+struct free_meter_id_args {
+    struct ofproto_dpif *ofproto;
+    ofproto_meter_id meter_id;
+};
+
+static void
+free_meter_id(struct free_meter_id_args *args)
+{
+    struct ofproto_dpif *ofproto = args->ofproto;
+
+    dpif_meter_del(ofproto->backer->dpif, args->meter_id, NULL, 0);
+    id_pool_free_id(ofproto->backer->meter_ids, args->meter_id.uint32);
+    free(args);
+}
+
 static void
 meter_del(struct ofproto *ofproto_, ofproto_meter_id meter_id)
 {
-    struct ofproto_dpif *ofproto = ofproto_dpif_cast(ofproto_);
+    struct free_meter_id_args *arg = xmalloc(sizeof *arg);
 
-    dpif_meter_del(ofproto->backer->dpif, meter_id, NULL, 0);
+    /* Before a meter can be deleted, Openflow spec requires all rules
+     * referring to the meter to be (automatically) removed before the
+     * meter is deleted. However, since vswitchd is multi-threaded,
+     * those rules and their actions remain accessible by other threads,
+     * especially by the handler and revalidator threads.
+     * Postpone meter deletion after RCU grace period, so that ongoing
+     * upcall translation or flow revalidation can complete. */
+    arg->ofproto = ofproto_dpif_cast(ofproto_);
+    arg->meter_id = meter_id;
+    ovsrcu_postpone(free_meter_id, arg);
 }
 
 const struct ofproto_class ofproto_dpif_class = {

@@ -156,6 +156,9 @@ stream_usage(const char *name, bool active, bool passive,
         printf("  --bootstrap-ca-cert=FILE  file with peer CA certificate "
                "to read or create\n");
     }
+    printf("SSL options:\n"
+           "  --ssl-protocols=PROTOS  list of SSL protocols to enable\n"
+           "  --ssl-ciphers=CIPHERS   list of SSL ciphers to enable\n");
 #endif
 }
 
@@ -278,8 +281,10 @@ stream_close(struct stream *stream)
 {
     if (stream != NULL) {
         char *name = stream->name;
+        char *peer_id = stream->peer_id;
         (stream->class->close)(stream);
         free(name);
+        free(peer_id);
     }
 }
 
@@ -428,6 +433,19 @@ void
 stream_send_wait(struct stream *stream)
 {
     stream_wait(stream, STREAM_SEND);
+}
+
+void
+stream_set_peer_id(struct stream *stream, const char *peer_id)
+{
+    free(stream->peer_id);
+    stream->peer_id = xstrdup(peer_id);
+}
+
+const char *
+stream_get_peer_id(const struct stream *stream)
+{
+    return stream->peer_id;
 }
 
 /* Given 'name', a pstream name in the form "TYPE:ARGS", stores the class

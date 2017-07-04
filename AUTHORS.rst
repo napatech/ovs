@@ -87,6 +87,7 @@ Damien Millescamps              damien.millescamps@6wind.com
 Dan Carpenter                   dan.carpenter@oracle.com
 Dan McGregor                    dan.mcgregor@usask.ca
 Dan Wendlandt                   dan@nicira.com
+Daniel Alvarez                  dalvarez@redhat.com
 Daniel Borkmann                 dborkman@redhat.com
 Daniel Hiltgen                  daniel@netkine.com
 Daniel Roman                    droman@nicira.com
@@ -215,6 +216,7 @@ Mehak Mahajan                   mmahajan@nicira.com
 Michael Arnaldi                 arnaldimichael@gmail.com
 Michal Weglicki                 michalx.weglicki@intel.com
 Mickey Spiegel                  mickeys.dev@gmail.com
+Miguel Angel Ajo                majopela@redhat.com
 Mijo Safradin                   mijo@linux.vnet.ibm.com
 Mika Vaisanen                   mika.vaisanen@gmail.com
 Minoru TAKAHASHI                takahashi.minoru7@gmail.com
@@ -242,12 +244,14 @@ Philippe Jung                   phil.jung@free.fr
 Pim van den Berg                pim@nethuis.nl
 pritesh                         pritesh.kothari@cisco.com
 Pravin B Shelar                 pshelar@nicira.com
+Przemyslaw Szczerbik            przemyslawx.szczerbik@intel.com
 Quentin Monnet                  quentin.monnet@6wind.com
 Raju Subramanian                rsubramanian@nicira.com
 Rami Rosen                      ramirose@gmail.com
 Ramu Ramamurthy                 ramu.ramamurthy@us.ibm.com
 Randall Sharo                   andall.sharo@navy.mil
 Ravi Kerur                      Ravi.Kerur@telekom.com
+Raymond Burkholder              ray@oneunified.net
 Reid Price                      reid@nicira.com
 Remko Tronçon                   git@el-tramo.be
 Rich Lane                       rlane@bigswitch.com
@@ -321,11 +325,14 @@ Yi-Hung Wei                     yihung.wei@gmail.com
 Yin Lin                         linyi@vmware.com
 Yu Zhiguo                       yuzg@cn.fujitsu.com
 Yuanhan Liu                     yuanhan.liu@linux.intel.com
+Yunjian Wang                    wangyunjian@huawei.com
 ZhengLingyun                    konghuarukhr@163.com
 Zoltán Balogh                   zoltan.balogh@ericsson.com
 Zoltan Kiss                     zoltan.kiss@citrix.com
+Zongkai LI                      zealokii@gmail.com
 Zhi Yong Wu                     zwu.kernel@gmail.com
 Zang MingJie                    zealot0630@gmail.com
+Zhenyu Gao                      sysugaozhenyu@gmail.com
 nickcooper-zhangtonghao         nickcooper-zhangtonghao@opencloud.tech
 wenxu                           wenxu@ucloud.cn
 wisd0me                         ak47izatool@gmail.com
@@ -438,6 +445,7 @@ John Darrington                 john@darrington.wattle.id.au
 John Galgay                     john@galgay.net
 John Hurley                     john.hurley@netronome.com
 John Reumann                    nofutznetworks@gmail.com
+Karthik Sundaravel              ksundara@redhat.com
 Kashyap Thimmaraju              kashyap.thimmaraju@sec.t-labs.tu-berlin.de
 Keith Holleman                  hollemanietf@gmail.com
 Kevin Lin                       kevinlin@berkeley.edu
@@ -528,6 +536,7 @@ Teemu Koponen                   koponen@nicira.com
 Thomas Morin                    thomas.morin@orange.com
 Timothy Chen                    tchen@nicira.com
 Torbjorn Tornkvist              kruskakli@gmail.com
+Tulio Ribeiro                   tribeiro@lasige.di.fc.ul.pt
 Tytus Kurek                     Tytus.Kurek@pega.com
 Valentin Bud                    valentin@hackaserver.com
 Vasiliy Tolstov                 v.tolstov@selfip.ru

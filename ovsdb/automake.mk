@@ -24,6 +24,8 @@ ovsdb_libovsdb_la_SOURCES = \
 	ovsdb/monitor.h \
 	ovsdb/query.c \
 	ovsdb/query.h \
+	ovsdb/rbac.c \
+	ovsdb/rbac.h \
 	ovsdb/replication.c \
 	ovsdb/replication.h \
 	ovsdb/row.c \
@@ -35,7 +37,9 @@ ovsdb_libovsdb_la_SOURCES = \
 	ovsdb/trigger.c \
 	ovsdb/trigger.h \
 	ovsdb/transaction.c \
-	ovsdb/transaction.h
+	ovsdb/transaction.h \
+	ovsdb/ovsdb-util.c \
+	ovsdb/ovsdb-util.h
 ovsdb_libovsdb_la_CFLAGS = $(AM_CFLAGS)
 ovsdb_libovsdb_la_CPPFLAGS = $(AM_CPPFLAGS)
 
@@ -47,6 +51,10 @@ MAN_FRAGMENTS += \
 	ovsdb/remote-passive.man \
 	ovsdb/replication.man \
 	ovsdb/replication-syn.man
+
+EXTRA_DIST += \
+	ovsdb/remote-active.xml \
+	ovsdb/remote-passive.xml
 
 # ovsdb-tool
 bin_PROGRAMS += ovsdb/ovsdb-tool

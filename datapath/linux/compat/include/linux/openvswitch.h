@@ -291,6 +291,7 @@ enum ovs_vport_attr {
 enum {
 	OVS_VXLAN_EXT_UNSPEC,
 	OVS_VXLAN_EXT_GBP,      /* Flag or __u32 */
+	OVS_VXLAN_EXT_GPE = 8,  /* Flag or __u32 */
 	__OVS_VXLAN_EXT_MAX,
 };
 
@@ -363,6 +364,12 @@ enum ovs_key_attr {
 	/* Only used within kernel data path. */
 	OVS_KEY_ATTR_TUNNEL_INFO,  /* struct ovs_tunnel_info */
 #endif
+
+#ifndef __KERNEL__
+	/* Only used within userspace data path. */
+	OVS_KEY_ATTR_PACKET_TYPE,  /* be32 packet type */
+#endif
+
 	__OVS_KEY_ATTR_MAX
 };
 
@@ -711,11 +718,11 @@ struct ovs_action_hash {
  * this header to build final header according to actual packet parameters.
  */
 struct ovs_action_push_tnl {
-	uint32_t tnl_port;
-	uint32_t out_port;
+	odp_port_t tnl_port;
+	odp_port_t out_port;
 	uint32_t header_len;
 	uint32_t tnl_type;     /* For logging. */
-	uint8_t  header[TNL_PUSH_HEADER_SIZE];
+	uint32_t header[TNL_PUSH_HEADER_SIZE / 4];
 };
 #endif
 
@@ -739,6 +746,17 @@ struct ovs_action_push_tnl {
  * nothing if the connection is already committed will check that the current
  * packet is in conntrack entry's original direction.  If directionality does
  * not match, will delete the existing conntrack entry and create a new one.
+ * @OVS_CT_ATTR_EVENTMASK: Mask of bits indicating which conntrack event types
+ * (enum ip_conntrack_events IPCT_*) should be reported.  For any bit set to
+ * zero, the corresponding event type is not generated.  Default behavior
+ * depends on system configuration, but typically all event types are
+ * generated, hence listening on NFNLGRP_CONNTRACK_UPDATE events may get a lot
+ * of events.  Explicitly passing this attribute allows limiting the updates
+ * received to the events of interest.  The bit 1 << IPCT_NEW, 1 <<
+ * IPCT_RELATED, and 1 << IPCT_DESTROY must be set to ones for those events to
+ * be received on NFNLGRP_CONNTRACK_NEW and NFNLGRP_CONNTRACK_DESTROY groups,
+ * respectively.  Remaining bits control the changes for which an event is
+ * delivered on the NFNLGRP_CONNTRACK_UPDATE group.
  */
 enum ovs_ct_attr {
 	OVS_CT_ATTR_UNSPEC,
@@ -750,6 +768,7 @@ enum ovs_ct_attr {
 				   related connections. */
 	OVS_CT_ATTR_NAT,        /* Nested OVS_NAT_ATTR_* */
 	OVS_CT_ATTR_FORCE_COMMIT,  /* No argument */
+	OVS_CT_ATTR_EVENTMASK,  /* u32 mask of IPCT_* events. */
 	__OVS_CT_ATTR_MAX
 };
 
@@ -758,7 +777,6 @@ enum ovs_ct_attr {
 /*
  * struct ovs_action_push_eth - %OVS_ACTION_ATTR_PUSH_ETH action argument.
  * @addresses: Source and destination MAC addresses.
- * @eth_type: Ethernet type
  */
 struct ovs_action_push_eth {
 	struct ovs_key_ethernet addresses;
@@ -823,8 +841,8 @@ enum ovs_nat_attr {
  * is copied from the value to the packet header field, rest of the bits are
  * left unchanged.  The non-masked value bits must be passed in as zeroes.
  * Masking is not supported for the %OVS_KEY_ATTR_TUNNEL attribute.
- * @OVS_ACTION_RECIRC: Recirculate within the data path.
- * @OVS_ACTION_HASH: Compute and set flow hash value.
+ * @OVS_ACTION_ATTR_RECIRC: Recirculate within the data path.
+ * @OVS_ACTION_ATTR_HASH: Compute and set flow hash value.
  * @OVS_ACTION_ATTR_PUSH_MPLS: Push a new MPLS label stack entry onto the
  * top of the packets MPLS label stack.  Set the ethertype of the
  * encapsulating frame to either %ETH_P_MPLS_UC or %ETH_P_MPLS_MC to
@@ -838,8 +856,7 @@ enum ovs_nat_attr {
  * entries in the flow key.
  * @OVS_ACTION_ATTR_PUSH_ETH: Push a new outermost Ethernet header onto the
  * packet.
- * @OVS_ACTION_ATTR_POP_ETH: Pop the outermost Ethernet header off the
- * packet.
+ * @OVS_ACTION_ATTR_POP_ETH: Pop the outermost Ethernet header off the packet.
  *
  * Only a single header can be set with a single %OVS_ACTION_ATTR_SET.  Not all
  * fields within a header are modifiable, e.g. the IPv4 protocol and fragment

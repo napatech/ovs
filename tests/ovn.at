@@ -643,41 +643,41 @@ output;
 
 # next
 next;
-    encodes as resubmit(,27)
+    encodes as resubmit(,19)
 next(11);
     formats as next;
-    encodes as resubmit(,27)
+    encodes as resubmit(,19)
 next(0);
-    encodes as resubmit(,16)
-next(15);
+    encodes as resubmit(,8)
+next(23);
     encodes as resubmit(,31)
 
 next();
     Syntax error at `)' expecting "pipeline" or "table".
 next(10;
     Syntax error at `;' expecting `)'.
-next(16);
-    "next" action cannot advance beyond table 15.
+next(24);
+    "next" action cannot advance beyond table 23.
 
 next(table=11);
     formats as next;
-    encodes as resubmit(,27)
+    encodes as resubmit(,19)
 next(pipeline=ingress);
     formats as next;
-    encodes as resubmit(,27)
+    encodes as resubmit(,19)
 next(table=11, pipeline=ingress);
     formats as next;
-    encodes as resubmit(,27)
+    encodes as resubmit(,19)
 next(pipeline=ingress, table=11);
     formats as next;
-    encodes as resubmit(,27)
+    encodes as resubmit(,19)
 
 next(pipeline=egress);
     "next" action cannot advance from ingress to egress pipeline (use "output" action instead)
 
 next(table=10);
     formats as next(10);
-    encodes as resubmit(,26)
+    encodes as resubmit(,18)
 
 # Loading a constant value.
 tcp.dst=80;
@@ -699,7 +699,7 @@ ip.ttl=4;
     has prereqs eth.type == 0x800 || eth.type == 0x86dd
 outport="eth0"; next; outport="LOCAL"; next;
     formats as outport = "eth0"; next; outport = "LOCAL"; next;
-    encodes as set_field:0x5->reg15,resubmit(,27),set_field:0xfffe->reg15,resubmit(,27)
+    encodes as set_field:0x5->reg15,resubmit(,19),set_field:0xfffe->reg15,resubmit(,19)
 
 inport[1] = 1;
     Cannot select subfield of string field inport.
@@ -780,11 +780,11 @@ ip.ttl
 
 # load balancing.
 ct_lb;
-    encodes as ct(table=27,zone=NXM_NX_REG13[0..15],nat)
+    encodes as ct(table=19,zone=NXM_NX_REG13[0..15],nat)
     has prereqs ip
 ct_lb();
     formats as ct_lb;
-    encodes as ct(table=27,zone=NXM_NX_REG13[0..15],nat)
+    encodes as ct(table=19,zone=NXM_NX_REG13[0..15],nat)
     has prereqs ip
 ct_lb(192.168.1.2:80, 192.168.1.3:80);
     encodes as group:1
@@ -803,7 +803,7 @@ ct_lb(foo);
 
 # ct_next
 ct_next;
-    encodes as ct(table=27,zone=NXM_NX_REG13[0..15])
+    encodes as ct(table=19,zone=NXM_NX_REG13[0..15])
     has prereqs ip
 
 # ct_commit
@@ -855,10 +855,10 @@ ct_commit(ct_label=18446744073709551616);
 
 # ct_dnat
 ct_dnat;
-    encodes as ct(table=27,zone=NXM_NX_REG11[0..15],nat)
+    encodes as ct(table=19,zone=NXM_NX_REG11[0..15],nat)
     has prereqs ip
 ct_dnat(192.168.1.2);
-    encodes as ct(commit,table=27,zone=NXM_NX_REG11[0..15],nat(dst=192.168.1.2))
+    encodes as ct(commit,table=19,zone=NXM_NX_REG11[0..15],nat(dst=192.168.1.2))
     has prereqs ip
 
 ct_dnat(192.168.1.2, 192.168.1.3);
@@ -872,10 +872,10 @@ ct_dnat();
 
 # ct_snat
 ct_snat;
-    encodes as ct(table=27,zone=NXM_NX_REG12[0..15],nat)
+    encodes as ct(table=19,zone=NXM_NX_REG12[0..15],nat)
     has prereqs ip
 ct_snat(192.168.1.2);
-    encodes as ct(commit,table=27,zone=NXM_NX_REG12[0..15],nat(src=192.168.1.2))
+    encodes as ct(commit,table=19,zone=NXM_NX_REG12[0..15],nat(src=192.168.1.2))
     has prereqs ip
 
 ct_snat(192.168.1.2, 192.168.1.3);
@@ -893,7 +893,7 @@ ct_clear;
 
 # clone
 clone { ip4.dst = 255.255.255.255; output; }; next;
-    encodes as clone(set_field:255.255.255.255->ip_dst,resubmit(,64)),resubmit(,27)
+    encodes as clone(set_field:255.255.255.255->ip_dst,resubmit(,64)),resubmit(,19)
     has prereqs eth.type == 0x800
 
 # arp
@@ -1026,6 +1026,13 @@ set_queue(61440);
     encodes as set_queue:61440
 set_queue(65535);
     Queue ID 65535 for set_queue is not in valid range 0 to 61440.
+
+# dns_lookup
+reg1[0] = dns_lookup();
+    encodes as controller(userdata=00.00.00.06.00.00.00.00.00.01.de.10.00.00.00.40,pause)
+    has prereqs udp
+reg1[0] = dns_lookup("foo");
+    dns_lookup doesn't take any parameters
 
 # Contradictionary prerequisites (allowed but not useful):
 ip4.src = ip6.src[0..31];
@@ -6428,6 +6435,383 @@ OVS_APP_EXIT_AND_WAIT([ovsdb-server])
 
 AT_CLEANUP
 
+AT_SETUP([ovn -- dns lookup : 1 HV, 2 LS, 2 LSPs/LS])
+AT_SKIP_IF([test $HAVE_PYTHON = no])
+ovn_start
+
+ovn-nbctl ls-add ls1
+
+ovn-nbctl lsp-add ls1 ls1-lp1 \
+-- lsp-set-addresses ls1-lp1 "f0:00:00:00:00:01 10.0.0.4 aef0::4"
+
+ovn-nbctl lsp-set-port-security ls1-lp1 "f0:00:00:00:00:01 10.0.0.4 aef0::4"
+
+ovn-nbctl lsp-add ls1 ls1-lp2 \
+-- lsp-set-addresses ls1-lp2 "f0:00:00:00:00:02 10.0.0.6 20.0.0.4"
+
+ovn-nbctl lsp-set-port-security ls1-lp2 "f0:00:00:00:00:02 10.0.0.6 20.0.0.4"
+
+DNS1=`ovn-nbctl create DNS records={}`
+DNS2=`ovn-nbctl create DNS records={}`
+
+ovn-nbctl set DNS $DNS1 records:vm1.ovn.org="10.0.0.4 aef0::4"
+ovn-nbctl set DNS $DNS1 records:vm2.ovn.org="10.0.0.6 20.0.0.4"
+ovn-nbctl set DNS $DNS2 records:vm3.ovn.org="40.0.0.4"
+
+ovn-nbctl set Logical_switch ls1 dns_records="$DNS1"
+
+net_add n1
+sim_add hv1
+
+as hv1
+ovs-vsctl add-br br-phys
+ovn_attach n1 br-phys 192.168.0.1
+ovs-vsctl -- add-port br-int hv1-vif1 -- \
+    set interface hv1-vif1 external-ids:iface-id=ls1-lp1 \
+    options:tx_pcap=hv1/vif1-tx.pcap \
+    options:rxq_pcap=hv1/vif1-rx.pcap \
+    ofport-request=1
+
+ovs-vsctl -- add-port br-int hv1-vif2 -- \
+    set interface hv1-vif2 external-ids:iface-id=ls1-lp2 \
+    options:tx_pcap=hv1/vif2-tx.pcap \
+    options:rxq_pcap=hv1/vif2-rx.pcap \
+    ofport-request=2
+
+ovn_populate_arp
+sleep 2
+as hv1 ovs-vsctl show
+
+echo "*************************"
+ovn-sbctl list DNS
+echo "*************************"
+
+ip_to_hex() {
+    printf "%02x%02x%02x%02x" "$@"
+}
+
+reset_pcap_file() {
+    local iface=$1
+    local pcap_file=$2
+    ovs-vsctl -- set Interface $iface options:tx_pcap=dummy-tx.pcap \
+options:rxq_pcap=dummy-rx.pcap
+    rm -f ${pcap_file}*.pcap
+    ovs-vsctl -- set Interface $iface options:tx_pcap=${pcap_file}-tx.pcap \
+options:rxq_pcap=${pcap_file}-rx.pcap
+}
+
+# set_dns_params host_name
+# Sets the dns_req_data and dns_resp_data
+set_dns_params() {
+    local hname=$1
+    local ttl=00000e10
+    an_count=0001
+    type=0001
+    case $hname in
+    vm1)
+        # vm1.ovn.org
+        query_name=03766d31036f766e036f726700
+        # IPv4 address - 10.0.0.4
+        expected_dns_answer=${query_name}00010001${ttl}00040a000004
+        ;;
+    vm2)
+        # vm2.ovn.org
+        query_name=03766d32036f766e036f726700
+        # IPv4 address - 10.0.0.6
+        expected_dns_answer=${query_name}00010001${ttl}00040a000006
+        # IPv4 address - 20.0.0.4
+        expected_dns_answer=${expected_dns_answer}${query_name}00010001${ttl}000414000004
+        an_count=0002
+        ;;
+    vm3)
+        # vm3.ovn.org
+        query_name=03766d33036f766e036f726700
+        # IPv4 address - 40.0.0.4
+        expected_dns_answer=${query_name}00010001${ttl}000428000004
+        ;;
+    vm1_ipv6_only)
+        # vm1.ovn.org
+        query_name=03766d31036f766e036f726700
+        # IPv6 address - aef0::4
+        type=001c
+        expected_dns_answer=${query_name}${type}0001${ttl}0010aef00000000000000000000000000004
+        ;;
+    vm1_ipv4_v6)
+        # vm1.ovn.org
+        query_name=03766d31036f766e036f726700
+        type=00ff
+        an_count=0002
+        # IPv4 address - 10.0.0.4
+        # IPv6 address - aef0::4
+        expected_dns_answer=${query_name}00010001${ttl}00040a000004
+        expected_dns_answer=${expected_dns_answer}${query_name}001c0001${ttl}0010
+        expected_dns_answer=${expected_dns_answer}aef00000000000000000000000000004
+        ;;
+    vm1_invalid_type)
+        # vm1.ovn.org
+        query_name=03766d31036f766e036f726700
+        # IPv6 address - aef0::4
+        type=0002
+        ;;
+    vm1_incomplete)
+        # set type to none
+        type=''
+    esac
+    # TTL - 3600
+    local dns_req_header=010201200001000000000000
+    local dns_resp_header=010281200001${an_count}00000000
+    dns_req_data=${dns_req_header}${query_name}${type}0001
+    dns_resp_data=${dns_resp_header}${query_name}${type}0001${expected_dns_answer}
+}
+
+# This shell function sends a DNS request packet
+# test_dns INPORT SRC_MAC DST_MAC SRC_IP DST_IP DNS_QUERY EXPEC
+test_dns() {
+    local inport=$1 src_mac=$2 dst_mac=$3 src_ip=$4 dst_ip=$5 dns_reply=$6
+    local dns_query_data=$7
+    shift; shift; shift; shift; shift; shift; shift;
+    # Packet size => IPv4 header (20) + UDP header (8) +
+    #                DNS data (header + query)
+    ip_len=`expr 28 + ${#dns_query_data} / 2`
+    udp_len=`expr $ip_len - 20`
+    ip_len=$(printf "%x" $ip_len)
+    udp_len=$(printf "%x" $udp_len)
+    local request=${dst_mac}${src_mac}0800450000${ip_len}0000000080110000
+    request=${request}${src_ip}${dst_ip}9234003500${udp_len}0000
+    # dns data
+    request=${request}${dns_query_data}
+
+    if test $dns_reply != 0; then
+        local dns_reply=$1
+        ip_len=`expr 28 + ${#dns_reply} / 2`
+        udp_len=`expr $ip_len - 20`
+        ip_len=$(printf "%x" $ip_len)
+        udp_len=$(printf "%x" $udp_len)
+        local reply=${src_mac}${dst_mac}0800450000${ip_len}0000000080110000
+        reply=${reply}${dst_ip}${src_ip}0035923400${udp_len}0000${dns_reply}
+        echo $reply >> $inport.expected
+    else
+        for outport; do
+            echo $request >> $outport.expected
+        done
+    fi
+    as hv1 ovs-appctl netdev-dummy/receive hv1-vif$inport $request
+}
+
+AT_CAPTURE_FILE([ofctl_monitor0.log])
+as hv1 ovs-ofctl monitor br-int resume --detach --no-chdir \
+--pidfile=ovs-ofctl0.pid 2> ofctl_monitor0.log
+
+set_dns_params vm2
+src_ip=`ip_to_hex 10 0 0 4`
+dst_ip=`ip_to_hex 10 0 0 1`
+dns_reply=1
+test_dns 1 f00000000001 f000000000f0 $src_ip $dst_ip $dns_reply $dns_req_data $dns_resp_data
+
+# NXT_RESUMEs should be 1.
+OVS_WAIT_UNTIL([test 1 = `cat ofctl_monitor*.log | grep -c NXT_RESUME`])
+
+$PYTHON "$top_srcdir/utilities/ovs-pcap.in" hv1/vif1-tx.pcap > 1.packets
+cat 1.expected | cut -c -48 > expout
+AT_CHECK([cat 1.packets | cut -c -48], [0], [expout])
+# Skipping the IPv4 checksum.
+cat 1.expected | cut -c 53- > expout
+AT_CHECK([cat 1.packets | cut -c 53-], [0], [expout])
+
+reset_pcap_file hv1-vif1 hv1/vif1
+reset_pcap_file hv1-vif2 hv1/vif2
+rm -f 1.expected
+rm -f 2.expected
+
+set_dns_params vm1
+src_ip=`ip_to_hex 10 0 0 6`
+dst_ip=`ip_to_hex 10 0 0 1`
+dns_reply=1
+test_dns 2 f00000000002 f000000000f0 $src_ip $dst_ip $dns_reply $dns_req_data $dns_resp_data
+
+# NXT_RESUMEs should be 2.
+OVS_WAIT_UNTIL([test 2 = `cat ofctl_monitor*.log | grep -c NXT_RESUME`])
+
+$PYTHON "$top_srcdir/utilities/ovs-pcap.in" hv1/vif2-tx.pcap > 2.packets
+cat 2.expected | cut -c -48 > expout
+AT_CHECK([cat 2.packets | cut -c -48], [0], [expout])
+# Skipping the IPv4 checksum.
+cat 2.expected | cut -c 53- > expout
+AT_CHECK([cat 2.packets | cut -c 53-], [0], [expout])
+
+reset_pcap_file hv1-vif1 hv1/vif1
+reset_pcap_file hv1-vif2 hv1/vif2
+rm -f 1.expected
+rm -f 2.expected
+
+# Clear the query name options for ls1-lp2
+ovn-nbctl --wait=hv remove DNS $DNS1 records vm2.ovn.org
+
+set_dns_params vm2
+src_ip=`ip_to_hex 10 0 0 4`
+dst_ip=`ip_to_hex 10 0 0 1`
+dns_reply=0
+test_dns 1 f00000000001 f00000000002 $src_ip $dst_ip $dns_reply $dns_req_data
+
+# NXT_RESUMEs should be 3.
+OVS_WAIT_UNTIL([test 3 = `cat ofctl_monitor*.log | grep -c NXT_RESUME`])
+
+$PYTHON "$top_srcdir/utilities/ovs-pcap.in" hv1/vif1-tx.pcap > 1.packets
+AT_CHECK([cat 1.packets], [0], [])
+
+reset_pcap_file hv1-vif1 hv1/vif1
+reset_pcap_file hv1-vif2 hv1/vif2
+rm -f 1.expected
+rm -f 2.expected
+
+# Clear the query name for ls1-lp1
+# Since ls1 has no query names configued,
+# ovn-northd should not add the DNS flows.
+ovn-nbctl --wait=hv remove DNS $DNS1 records vm1.ovn.org
+
+set_dns_params vm1
+src_ip=`ip_to_hex 10 0 0 6`
+dst_ip=`ip_to_hex 10 0 0 1`
+dns_reply=0
+test_dns 2 f00000000002 f000000000f0 $src_ip $dst_ip $dns_reply $dns_req_data
+
+# NXT_RESUMEs should be 3 only.
+OVS_WAIT_UNTIL([test 3 = `cat ofctl_monitor*.log | grep -c NXT_RESUME`])
+
+$PYTHON "$top_srcdir/utilities/ovs-pcap.in" hv1/vif2-tx.pcap > 2.packets
+AT_CHECK([cat 2.packets], [0], [])
+
+reset_pcap_file hv1-vif1 hv1/vif1
+reset_pcap_file hv1-vif2 hv1/vif2
+rm -f 1.expected
+rm -f 2.expected
+
+# Test IPv6 (AAAA records) using IPv4 packet.
+# Add back the DNS options for ls1-lp1.
+ovn-nbctl set DNS $DNS1 records:vm1.ovn.org="10.0.0.4 aef0::4"
+
+set_dns_params vm1_ipv6_only
+src_ip=`ip_to_hex 10 0 0 6`
+dst_ip=`ip_to_hex 10 0 0 1`
+dns_reply=1
+test_dns 2 f00000000002 f000000000f0 $src_ip $dst_ip $dns_reply $dns_req_data $dns_resp_data
+
+# NXT_RESUMEs should be 4.
+OVS_WAIT_UNTIL([test 4 = `cat ofctl_monitor*.log | grep -c NXT_RESUME`])
+
+$PYTHON "$top_srcdir/utilities/ovs-pcap.in" hv1/vif2-tx.pcap > 2.packets
+cat 2.expected | cut -c -48 > expout
+AT_CHECK([cat 2.packets | cut -c -48], [0], [expout])
+# Skipping the IPv4 checksum.
+cat 2.expected | cut -c 53- > expout
+AT_CHECK([cat 2.packets | cut -c 53-], [0], [expout])
+
+reset_pcap_file hv1-vif1 hv1/vif1
+reset_pcap_file hv1-vif2 hv1/vif2
+rm -f 1.expected
+rm -f 2.expected
+
+# Test both IPv4 (A) and IPv6 (AAAA records) using IPv4 packet.
+set_dns_params vm1_ipv4_v6
+src_ip=`ip_to_hex 10 0 0 6`
+dst_ip=`ip_to_hex 10 0 0 1`
+dns_reply=1
+test_dns 2 f00000000002 f000000000f0 $src_ip $dst_ip $dns_reply $dns_req_data $dns_resp_data
+
+# NXT_RESUMEs should be 5.
+OVS_WAIT_UNTIL([test 5 = `cat ofctl_monitor*.log | grep -c NXT_RESUME`])
+
+$PYTHON "$top_srcdir/utilities/ovs-pcap.in" hv1/vif2-tx.pcap > 2.packets
+cat 2.expected | cut -c -48 > expout
+AT_CHECK([cat 2.packets | cut -c -48], [0], [expout])
+# Skipping the IPv4 checksum.
+cat 2.expected | cut -c 53- > expout
+AT_CHECK([cat 2.packets | cut -c 53-], [0], [expout])
+
+reset_pcap_file hv1-vif1 hv1/vif1
+reset_pcap_file hv1-vif2 hv1/vif2
+rm -f 1.expected
+rm -f 2.expected
+
+# Invalid type.
+set_dns_params vm1_invalid_type
+src_ip=`ip_to_hex 10 0 0 6`
+dst_ip=`ip_to_hex 10 0 0 1`
+dns_reply=0
+test_dns 2 f00000000002 f000000000f0 $src_ip $dst_ip $dns_reply $dns_req_data
+
+# NXT_RESUMEs should be 6.
+OVS_WAIT_UNTIL([test 6 = `cat ofctl_monitor*.log | grep -c NXT_RESUME`])
+
+$PYTHON "$top_srcdir/utilities/ovs-pcap.in" hv1/vif2-tx.pcap > 2.packets
+AT_CHECK([cat 2.packets], [0], [])
+
+reset_pcap_file hv1-vif1 hv1/vif1
+reset_pcap_file hv1-vif2 hv1/vif2
+rm -f 1.expected
+rm -f 2.expected
+
+# Incomplete DNS packet.
+set_dns_params vm1_incomplete
+src_ip=`ip_to_hex 10 0 0 6`
+dst_ip=`ip_to_hex 10 0 0 1`
+dns_reply=0
+test_dns 2 f00000000002 f000000000f0 $src_ip $dst_ip $dns_reply $dns_req_data
+
+# NXT_RESUMEs should be 7.
+OVS_WAIT_UNTIL([test 7 = `cat ofctl_monitor*.log | grep -c NXT_RESUME`])
+
+$PYTHON "$top_srcdir/utilities/ovs-pcap.in" hv1/vif2-tx.pcap > 2.packets
+AT_CHECK([cat 2.packets], [0], [])
+
+reset_pcap_file hv1-vif1 hv1/vif1
+reset_pcap_file hv1-vif2 hv1/vif2
+rm -f 1.expected
+rm -f 2.expected
+
+# Add one more DNS record to the ls1.
+ovn-nbctl --wait=hv set Logical_switch ls1 dns_records="$DNS1 $DNS2"
+
+set_dns_params vm3
+src_ip=`ip_to_hex 10 0 0 4`
+dst_ip=`ip_to_hex 10 0 0 1`
+dns_reply=1
+test_dns 1 f00000000001 f000000000f0 $src_ip $dst_ip $dns_reply $dns_req_data $dns_resp_data
+
+# NXT_RESUMEs should be 8.
+OVS_WAIT_UNTIL([test 8 = `cat ofctl_monitor*.log | grep -c NXT_RESUME`])
+
+$PYTHON "$top_srcdir/utilities/ovs-pcap.in" hv1/vif1-tx.pcap > 1.packets
+cat 1.expected | cut -c -48 > expout
+AT_CHECK([cat 1.packets | cut -c -48], [0], [expout])
+# Skipping the IPv4 checksum.
+cat 1.expected | cut -c 53- > expout
+AT_CHECK([cat 1.packets | cut -c 53-], [0], [expout])
+
+reset_pcap_file hv1-vif1 hv1/vif1
+reset_pcap_file hv1-vif2 hv1/vif2
+rm -f 1.expected
+rm -f 2.expected
+
+as hv1
+ OVS_APP_EXIT_AND_WAIT([ovn-controller])
+OVS_APP_EXIT_AND_WAIT([ovs-vswitchd])
+OVS_APP_EXIT_AND_WAIT([ovsdb-server])
+
+as ovn-sb
+OVS_APP_EXIT_AND_WAIT([ovsdb-server])
+
+as ovn-nb
+OVS_APP_EXIT_AND_WAIT([ovsdb-server])
+
+as northd
+OVS_APP_EXIT_AND_WAIT([ovn-northd])
+
+as main
+OVS_APP_EXIT_AND_WAIT([ovs-vswitchd])
+OVS_APP_EXIT_AND_WAIT([ovsdb-server])
+AT_CLEANUP
+
 AT_SETUP([ovn -- 1 LR with distributed router gateway port])
 AT_SKIP_IF([test $HAVE_PYTHON = no])
 ovn_start
@@ -6756,11 +7140,7 @@ dst_ip=`ip_to_hex 192 168 1 3`
 expected=${dst_mac}${src_mac}08004500001c000000003f110100${src_ip}${dst_ip}0035111100080000
 
 echo $expected >> hv2-vif1.expected
-# The latest tunnel combine add only single combined rule in datapath instead
-# of two. The following test case trying to match packet on non-existent second
-# tunnel rule.
-# Commenting the packet validation to avoid the test case failing.
-# OVN_CHECK_PACKETS([hv2/vif1-tx.pcap], [hv2-vif1.expected])
+OVN_CHECK_PACKETS([hv2/vif1-tx.pcap], [hv2-vif1.expected])
 
 OVN_CLEANUP([hv1],[hv2],[hv3])
 
@@ -6990,6 +7370,128 @@ dst_ip=`ip_to_hex 10 0 0 2`
 echo "${dst_mac}${src_mac}08004500001c000000003f110100${src_ip}${dst_ip}0035111100080000" > expected
 
 OVN_CHECK_PACKETS([hv2/vif1-tx.pcap], [expected])
+
+OVN_CLEANUP([hv1],[hv2])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- 2 HVs, 1 lport/HV, localport ports])
+AT_SKIP_IF([test $HAVE_PYTHON = no])
+ovn_start
+
+ovn-nbctl ls-add ls1
+
+# Add localport to the switch
+ovn-nbctl lsp-add ls1 lp01
+ovn-nbctl lsp-set-addresses lp01 f0:00:00:00:00:01
+ovn-nbctl lsp-set-type lp01 localport
+
+net_add n1
+
+for i in 1 2; do
+    sim_add hv$i
+    as hv$i
+    ovs-vsctl add-br br-phys
+    ovn_attach n1 br-phys 192.168.0.$i
+    ovs-vsctl add-port br-int vif01 -- \
+        set Interface vif01 external-ids:iface-id=lp01 \
+                              options:tx_pcap=hv${i}/vif01-tx.pcap \
+                              options:rxq_pcap=hv${i}/vif01-rx.pcap \
+                              ofport-request=${i}0
+
+    ovs-vsctl add-port br-int vif${i}1 -- \
+        set Interface vif${i}1 external-ids:iface-id=lp${i}1 \
+                              options:tx_pcap=hv${i}/vif${i}1-tx.pcap \
+                              options:rxq_pcap=hv${i}/vif${i}1-rx.pcap \
+                              ofport-request=${i}1
+
+    ovn-nbctl lsp-add ls1 lp${i}1
+    ovn-nbctl lsp-set-addresses lp${i}1 f0:00:00:00:00:${i}1
+    ovn-nbctl lsp-set-port-security lp${i}1 f0:00:00:00:00:${i}1
+
+        OVS_WAIT_UNTIL([test x`ovn-nbctl lsp-get-up lp${i}1` = xup])
+done
+
+ovn-nbctl --wait=sb sync
+ovn-sbctl dump-flows
+
+ovn_populate_arp
+
+# Given the name of a logical port, prints the name of the hypervisor
+# on which it is located.
+vif_to_hv() {
+    echo hv${1%?}
+}
+#
+# test_packet INPORT DST SRC ETHTYPE EOUT LOUT DEFHV
+#
+# This shell function causes a packet to be received on INPORT.  The packet's
+# content has Ethernet destination DST and source SRC (each exactly 12 hex
+# digits) and Ethernet type ETHTYPE (4 hex digits).  INPORT is specified as
+# logical switch port numbers, e.g. 11 for vif11.
+#
+# EOUT is the end-to-end output port, that is, where the packet will end up
+# after possibly bouncing through one or more localnet ports.  LOUT is the
+# logical output port, which might be a localnet port, as seen by ovn-trace
+# (which doesn't know what localnet ports are connected to and therefore can't
+# figure out the end-to-end answer).
+#
+# DEFHV is the default hypervisor from where the packet is going to be sent
+# if the source port is a localport.
+for i in 1 2; do
+    for j in 0 1; do
+        : > $i$j.expected
+    done
+done
+test_packet() {
+    local inport=$1 dst=$2 src=$3 eth=$4 eout=$5 lout=$6 defhv=$7
+    echo "$@"
+
+    # First try tracing the packet.
+    uflow="inport==\"lp$inport\" && eth.dst==$dst && eth.src==$src && eth.type==0x$eth"
+    if test $lout != drop; then
+        echo "output(\"$lout\");"
+    fi > expout
+    AT_CAPTURE_FILE([trace])
+    AT_CHECK([ovn-trace --all ls1 "$uflow" | tee trace | sed '1,/Minimal trace/d'], [0], [expout])
+
+    # Then actually send a packet, for an end-to-end test.
+    local packet=$(echo $dst$src | sed 's/://g')${eth}
+    hv=`vif_to_hv $inport`
+    # If hypervisor 0 (localport) use the defhv parameter
+    if test $hv == hv0; then
+        hv=$defhv
+    fi
+    vif=vif$inport
+    as $hv ovs-appctl netdev-dummy/receive $vif $packet
+    if test $eout != drop; then
+        echo $packet >> ${eout#lp}.expected
+    fi
+}
+
+
+# lp11 and lp21 are on different hypervisors
+test_packet 11 f0:00:00:00:00:21 f0:00:00:00:00:11 1121 lp21 lp21
+test_packet 21 f0:00:00:00:00:11 f0:00:00:00:00:21 2111 lp11 lp11
+
+# Both VIFs should be able to reach the localport on their own HV
+test_packet 11 f0:00:00:00:00:01 f0:00:00:00:00:11 1101 lp01 lp01
+test_packet 21 f0:00:00:00:00:01 f0:00:00:00:00:21 2101 lp01 lp01
+
+# Packet sent from localport on same hv should reach the vif
+test_packet 01 f0:00:00:00:00:11 f0:00:00:00:00:01 0111 lp11 lp11 hv1
+test_packet 01 f0:00:00:00:00:21 f0:00:00:00:00:01 0121 lp21 lp21 hv2
+
+# Packet sent from localport on different hv should be dropped
+test_packet 01 f0:00:00:00:00:21 f0:00:00:00:00:01 0121 drop lp21 hv1
+test_packet 01 f0:00:00:00:00:11 f0:00:00:00:00:01 0111 drop lp11 hv2
+
+# Now check the packets actually received against the ones expected.
+for i in 1 2; do
+    for j in 0 1; do
+        OVN_CHECK_PACKETS([hv$i/vif$i$j-tx.pcap], [$i$j.expected])
+    done
+done
 
 OVN_CLEANUP([hv1],[hv2])
 

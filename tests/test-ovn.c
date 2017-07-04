@@ -1191,7 +1191,7 @@ test_parse_actions(struct ovs_cmdl_context *ctx OVS_UNUSED)
     struct shash symtab;
     struct hmap dhcp_opts;
     struct hmap dhcpv6_opts;
-    struct simap ports, ct_zones;
+    struct simap ports;
     struct ds input;
     bool ok = true;
 
@@ -1209,7 +1209,6 @@ test_parse_actions(struct ovs_cmdl_context *ctx OVS_UNUSED)
     simap_put(&ports, "eth0", 5);
     simap_put(&ports, "eth1", 6);
     simap_put(&ports, "LOCAL", ofp_to_u16(OFPP_LOCAL));
-    simap_init(&ct_zones);
 
     ds_init(&input);
     while (!ds_get_test_line(&input, stdin)) {
@@ -1225,7 +1224,7 @@ test_parse_actions(struct ovs_cmdl_context *ctx OVS_UNUSED)
             .symtab = &symtab,
             .dhcp_opts = &dhcp_opts,
             .dhcpv6_opts = &dhcpv6_opts,
-            .n_tables = 16,
+            .n_tables = 24,
             .cur_ltable = 10,
         };
         error = ovnacts_parse_string(ds_cstr(&input), &pp, &ovnacts, &prereqs);
@@ -1243,12 +1242,11 @@ test_parse_actions(struct ovs_cmdl_context *ctx OVS_UNUSED)
                 .lookup_port = lookup_port_cb,
                 .aux = &ports,
                 .is_switch = true,
-                .ct_zones = &ct_zones,
                 .group_table = &group_table,
 
                 .pipeline = OVNACT_P_INGRESS,
-                .ingress_ptable = 16,
-                .egress_ptable = 48,
+                .ingress_ptable = 8,
+                .egress_ptable = 40,
                 .output_ptable = 64,
                 .mac_bind_ptable = 65,
             };
@@ -1256,7 +1254,7 @@ test_parse_actions(struct ovs_cmdl_context *ctx OVS_UNUSED)
             ofpbuf_init(&ofpacts, 0);
             ovnacts_encode(ovnacts.data, ovnacts.size, &ep, &ofpacts);
             struct ds ofpacts_s = DS_EMPTY_INITIALIZER;
-            ofpacts_format(ofpacts.data, ofpacts.size, &ofpacts_s);
+            ofpacts_format(ofpacts.data, ofpacts.size, NULL, &ofpacts_s);
             printf("    encodes as %s\n", ds_cstr(&ofpacts_s));
             ds_destroy(&ofpacts_s);
             ofpbuf_uninit(&ofpacts);
@@ -1306,7 +1304,6 @@ test_parse_actions(struct ovs_cmdl_context *ctx OVS_UNUSED)
     ds_destroy(&input);
 
     simap_destroy(&ports);
-    simap_destroy(&ct_zones);
     expr_symtab_destroy(&symtab);
     shash_destroy(&symtab);
     dhcp_opts_destroy(&dhcp_opts);

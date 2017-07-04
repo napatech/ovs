@@ -24,12 +24,14 @@ DOC_SOURCE = \
 	Documentation/intro/install/xenserver.rst \
 	Documentation/tutorials/index.rst \
 	Documentation/tutorials/ovs-advanced.rst \
+	Documentation/tutorials/ovn-openstack.rst \
 	Documentation/tutorials/ovn-sandbox.rst \
 	Documentation/topics/index.rst \
 	Documentation/topics/bonding.rst \
 	Documentation/topics/datapath.rst \
 	Documentation/topics/design.rst \
 	Documentation/topics/dpdk/index.rst \
+	Documentation/topics/dpdk/ring.rst \
 	Documentation/topics/dpdk/vhost-user.rst \
 	Documentation/topics/testing.rst \
 	Documentation/topics/high-availability.rst \

@@ -75,6 +75,7 @@ BuildRequires: python3-devel
 BuildRequires: desktop-file-utils
 BuildRequires: groff graphviz
 BuildRequires: checkpolicy, selinux-policy-devel
+BuildRequires: python-sphinx
 # make check dependencies
 BuildRequires: %{_py2}-twisted%{?rhel:-core} %{_py2}-zope-interface %{_py2}-six
 BuildRequires: procps-ng
@@ -229,6 +230,8 @@ make -f %{_datadir}/selinux/devel/Makefile
 rm -rf $RPM_BUILD_ROOT
 make install DESTDIR=$RPM_BUILD_ROOT
 
+install -d -m 0755 $RPM_BUILD_ROOT%{_rundir}/openvswitch
+install -d -m 0755 $RPM_BUILD_ROOT%{_localstatedir}/log/openvswitch
 install -d -m 0755 $RPM_BUILD_ROOT%{_sysconfdir}/openvswitch
 
 install -p -D -m 0644 \
@@ -270,15 +273,16 @@ rm -rf $RPM_BUILD_ROOT/%{_datadir}/openvswitch/python/
 install -d -m 0755 $RPM_BUILD_ROOT/%{_sharedstatedir}/openvswitch
 
 touch $RPM_BUILD_ROOT%{_sysconfdir}/openvswitch/conf.db
+touch $RPM_BUILD_ROOT%{_sysconfdir}/openvswitch/.conf.db.~lock~
 touch $RPM_BUILD_ROOT%{_sysconfdir}/openvswitch/system-id.conf
 
 install -p -m 644 -D selinux/openvswitch-custom.pp \
         $RPM_BUILD_ROOT%{_datadir}/selinux/packages/%{name}/openvswitch-custom.pp
 
 install -d $RPM_BUILD_ROOT%{_prefix}/lib/firewalld/services/
-install rhel/usr_lib_firewalld_services_ovn-central-firewall-service.xml \
+install -p -m 0644 rhel/usr_lib_firewalld_services_ovn-central-firewall-service.xml \
         $RPM_BUILD_ROOT%{_prefix}/lib/firewalld/services/ovn-central-firewall-service.xml
-install rhel/usr_lib_firewalld_services_ovn-host-firewall-service.xml \
+install -p -m 0644 rhel/usr_lib_firewalld_services_ovn-host-firewall-service.xml \
         $RPM_BUILD_ROOT%{_prefix}/lib/firewalld/services/ovn-host-firewall-service.xml
 
 # remove unpackaged files
@@ -410,36 +414,24 @@ if [ $1 -eq 0 ] ; then
 fi
 
 %postun ovn-central
-%if 0%{?systemd_postun_with_restart:1}
-    %systemd_postun_with_restart ovn-northd.service
+%if 0%{?systemd_postun:1}
+    %systemd_postun ovn-northd.service
 %else
     /bin/systemctl daemon-reload >/dev/null 2>&1 || :
-    if [ "$1" -ge "1" ] ; then
-    # Package upgrade, not uninstall
-        /bin/systemctl try-restart ovn-northd.service >/dev/null 2>&1 || :
-    fi
 %endif
 
 %postun ovn-host
-%if 0%{?systemd_postun_with_restart:1}
-    %systemd_postun_with_restart ovn-controller.service
+%if 0%{?systemd_postun:1}
+    %systemd_postun ovn-controller.service
 %else
     /bin/systemctl daemon-reload >/dev/null 2>&1 || :
-    if [ "$1" -ge "1" ] ; then
-        # Package upgrade, not uninstall
-        /bin/systemctl try-restart ovn-controller.service >/dev/null 2>&1 || :
-    fi
 %endif
 
 %postun ovn-vtep
-%if 0%{?systemd_postun_with_restart:1}
-    %systemd_postun_with_restart ovn-controller-vtep.service
+%if 0%{?systemd_postun:1}
+    %systemd_postun ovn-controller-vtep.service
 %else
     /bin/systemctl daemon-reload >/dev/null 2>&1 || :
-    if [ "$1" -ge "1" ] ; then
-        # Package upgrade, not uninstall
-        /bin/systemctl try-restart ovn-controller-vtep.service >/dev/null 2>&1 || :
-    fi
 %endif
 
 %postun selinux-policy
@@ -490,6 +482,7 @@ fi
 %{_sysconfdir}/bash_completion.d/ovs-vsctl-bashcomp.bash
 %dir %{_sysconfdir}/openvswitch
 %config %ghost %{_sysconfdir}/openvswitch/conf.db
+%ghost %{_sysconfdir}/openvswitch/.conf.db.~lock~
 %config %ghost %{_sysconfdir}/openvswitch/system-id.conf
 %config(noreplace) %{_sysconfdir}/sysconfig/openvswitch
 %config(noreplace) %{_sysconfdir}/logrotate.d/openvswitch

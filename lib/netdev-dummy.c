@@ -1067,6 +1067,11 @@ netdev_dummy_send(struct netdev *netdev, int qid OVS_UNUSED,
         const void *buffer = dp_packet_data(packet);
         size_t size = dp_packet_size(packet);
 
+        if (batch->packets[i]->packet_type != htonl(PT_ETH)) {
+            error = EPFNOSUPPORT;
+            break;
+        }
+
         size -= dp_packet_get_cutlen(packet);
 
         if (size < ETH_HEADER_LEN) {
@@ -1377,6 +1382,7 @@ netdev_dummy_update_flags(struct netdev *netdev_,
                                                                 \
     NULL,                       /* get_features */              \
     NULL,                       /* set_advertisements */        \
+    NULL,                       /* get_pt_mode */               \
                                                                 \
     NULL,                       /* set_policing */              \
     NULL,                       /* get_qos_types */             \
@@ -1409,6 +1415,8 @@ netdev_dummy_update_flags(struct netdev *netdev_,
     netdev_dummy_rxq_recv,                                      \
     netdev_dummy_rxq_wait,                                      \
     netdev_dummy_rxq_drain,                                     \
+                                                                \
+    NO_OFFLOAD_API                                              \
 }
 
 static const struct netdev_class dummy_class =

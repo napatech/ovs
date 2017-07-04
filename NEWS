@@ -1,8 +1,16 @@
 Post-v2.7.0
 ---------------------
+   - ovs-ofctl:
+     * ovs-ofctl can now accept and display port names in place of numbers.  By
+       default it always accepts names and in interactive use it displays them;
+       use --names or --no-names to override.  See ovs-ofctl(8) for details.
+     * "ovs-ofctl dump-flows" now accepts --no-stats to omit flow statistics.
    - Tunnels:
      * Added support to set packet mark for tunnel endpoint using
        `egress_pkt_mark` OVSDB option.
+     * When using Linux kernel datapath tunnels may be created using rtnetlink.
+       This will allow us to take advantage of new tunnel features without
+       having to make changes to the vport modules.
    - EMC insertion probability is reduced to 1% and is configurable via
      the new 'other_config:emc-insert-inv-prob' option.
    - DPDK:
@@ -10,9 +18,19 @@ Post-v2.7.0
        Log level can be changed in a usual OVS way using
        'ovs-appctl vlog' commands for 'dpdk' module. Lower bound
        still can be configured via extra arguments for DPDK EAL.
+     * dpdkvhostuser ports are marked as deprecated.  They will be removed
+       in an upcoming release.
+   - IPFIX now provides additional counters:
+     * Total counters since metering process startup.
+     * Per-flow TCP flag counters.
    - New support for multiple VLANs (802.1ad or "QinQ"), including a new
      "dot1q-tunnel" port VLAN mode.
+   - In ovn-vsctl and vtep-ctl, record UUIDs in commands may now be
+     abbreviated to 4 hex digits.
+   - Userspace Datapath:
+     * Added NAT support for userspace datapath.
    - OVN:
+     * New built-in DNS support.
      * IPAM for IPv4 can now exclude user-defined addresses from assignment.
      * IPAM can now assign IPv6 addresses.
      * Make the DHCPv4 router setting optional.
@@ -20,12 +38,34 @@ Post-v2.7.0
      * Allow ovn-controller SSL configuration to be obtained from vswitchd
        database.
      * ovn-trace now has basic support for tracing distributed firewalls.
-   - Add the command 'ovs-appctl stp/show' (see ovs-vswitchd(8)).
+     * In ovn-nbctl and ovn-sbctl, record UUIDs in commands may now be
+       abbreviated to 4 hex digits.
+     * "ovn-sbctl lflow-list" can now print OpenFlow flows that correspond
+       to logical flows.
+     * Now uses OVSDB RBAC support to reduce impact of compromised hypervisors.
+   - OVSDB:
+     * New support for role-based access control (see ovsdb-server(1)).
+   - New commands 'stp/show' and 'rstp/show' (see ovs-vswitchd(8)).
    - OpenFlow:
+     * All features required by OpenFlow 1.4 are now implemented, so
+       ovs-vswitchd now enables OpenFlow 1.4 by default (in addition to
+       OpenFlow 1.0 to 1.3).
      * Increased support for OpenFlow 1.6 (draft).
      * Bundles now support hashing by just nw_src or nw_dst.
      * The "learn" action now supports a "limit" option (see ovs-ofctl(8)).
      * The port status bit OFPPS_LIVE now reflects link aliveness.
+     * OpenFlow 1.5 packet-out is now supported.
+   - Fedora Packaging:
+     * OVN services are no longer restarted automatically after upgrade.
+   - Add --cleanup option to command 'ovs-appctl exit' (see ovs-vswitchd(8)).
+   - L3 tunneling:
+     * Use new tunnel port option "packet_type" to configure L2 vs. L3.
+     * New vxlan tunnel extension "gpe" to support VXLAN-GPE tunnels.
+     * New support for non-Ethernet (L3) payloads in GRE and VXLAN-GPE.
+   - The BFD detection multiplier is now user-configurable.
+   - Add experimental support for hardware offloading
+     * HW offloading is disabled by default.
+     * HW offloading is done through the TC interface.
 
 v2.7.0 - 21 Feb 2017
 ---------------------
@@ -75,6 +115,7 @@ v2.7.0 - 21 Feb 2017
      * The "sample" action now supports "ingress" and "egress" options.
      * The "ct" action now supports the TFTP ALG where support is available.
      * New actions "clone" and "ct_clear".
+     * The "meter" action is now supported in the userspace datapath.
    - ovs-ofctl:
      * 'bundle' command now supports packet-out messages.
      * New syntax for 'ovs-ofctl packet-out' command, which uses the

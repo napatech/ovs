@@ -54,6 +54,9 @@
 #include "openvswitch/vlog.h"
 #include "flow.h"
 #include "util.h"
+#ifdef __linux__
+#include "tc.h"
+#endif
 
 VLOG_DEFINE_THIS_MODULE(netdev);
 
@@ -91,6 +94,8 @@ struct netdev_registered_class {
      * instance of the class. */
     struct ovs_refcount refcnt;
 };
+
+static bool netdev_flow_api_enabled = false;
 
 /* This is set pretty low because we probably won't learn anything from the
  * additional log messages. */
@@ -288,6 +293,21 @@ netdev_enumerate_types(struct sset *types)
     }
 }
 
+static const char *
+netdev_vport_type_from_name(const char *name)
+{
+    struct netdev_registered_class *rc;
+    const char *type;
+    CMAP_FOR_EACH (rc, cmap_node, &netdev_classes) {
+        const char *dpif_port = netdev_vport_class_get_dpif_port(rc->class);
+        if (dpif_port && !strncmp(name, dpif_port, strlen(dpif_port))) {
+            type = rc->class->type;
+            return type;
+        }
+    }
+    return NULL;
+}
+
 /* Check that the network device name is not the same as any of the registered
  * vport providers' dpif_port name (dpif_port is NULL if the vport provider
  * does not define it) or the datapath internal port name (e.g. ovs-system).
@@ -396,6 +416,8 @@ netdev_open(const char *name, const char *type, struct netdev **netdevp)
                       name, type);
             error = EAFNOSUPPORT;
         }
+    } else if (type && type[0] && strcmp(type, netdev->netdev_class->type)) {
+        error = EEXIST;
     } else {
         error = 0;
     }
@@ -705,6 +727,14 @@ netdev_set_tx_multiq(struct netdev *netdev, unsigned int n_txq)
     return error;
 }
 
+enum netdev_pt_mode
+netdev_get_pt_mode(const struct netdev *netdev)
+{
+    return (netdev->netdev_class->get_pt_mode
+            ? netdev->netdev_class->get_pt_mode(netdev)
+            : NETDEV_PT_LEGACY_L2);
+}
+
 /* Sends 'batch' on 'netdev'.  Returns 0 if successful (for every packet),
  * otherwise a positive errno value.  Returns EAGAIN without blocking if
  * at least one the packets cannot be queued immediately.  Returns EMSGSIZE
@@ -809,7 +839,7 @@ netdev_push_header(const struct netdev *netdev,
     struct dp_packet *packet;
     DP_PACKET_BATCH_FOR_EACH (packet, batch) {
         netdev->netdev_class->push_header(packet, data);
-        pkt_metadata_init(&packet->md, u32_to_odp(data->out_port));
+        pkt_metadata_init(&packet->md, data->out_port);
     }
 
     return 0;
@@ -1811,9 +1841,14 @@ netdev_get_vports(size_t *size)
 const char *
 netdev_get_type_from_name(const char *name)
 {
-    struct netdev *dev = netdev_from_name(name);
-    const char *type = dev ? netdev_get_type(dev) : NULL;
-    netdev_close(dev);
+    struct netdev *dev;
+    const char *type;
+    type = netdev_vport_type_from_name(name);
+    if (type == NULL) {
+        dev = netdev_from_name(name);
+        type = dev ? netdev_get_type(dev) : NULL;
+        netdev_close(dev);
+    }
     return type;
 }
 
@@ -1998,3 +2033,362 @@ netdev_reconfigure(struct netdev *netdev)
             ? class->reconfigure(netdev)
             : EOPNOTSUPP);
 }
+
+int
+netdev_flow_flush(struct netdev *netdev)
+{
+    const struct netdev_class *class = netdev->netdev_class;
+
+    return (class->flow_flush
+            ? class->flow_flush(netdev)
+            : EOPNOTSUPP);
+}
+
+int
+netdev_flow_dump_create(struct netdev *netdev, struct netdev_flow_dump **dump)
+{
+    const struct netdev_class *class = netdev->netdev_class;
+
+    return (class->flow_dump_create
+            ? class->flow_dump_create(netdev, dump)
+            : EOPNOTSUPP);
+}
+
+int
+netdev_flow_dump_destroy(struct netdev_flow_dump *dump)
+{
+    const struct netdev_class *class = dump->netdev->netdev_class;
+
+    return (class->flow_dump_destroy
+            ? class->flow_dump_destroy(dump)
+            : EOPNOTSUPP);
+}
+
+bool
+netdev_flow_dump_next(struct netdev_flow_dump *dump, struct match *match,
+                      struct nlattr **actions, struct dpif_flow_stats *stats,
+                      ovs_u128 *ufid, struct ofpbuf *rbuffer,
+                      struct ofpbuf *wbuffer)
+{
+    const struct netdev_class *class = dump->netdev->netdev_class;
+
+    return (class->flow_dump_next
+            ? class->flow_dump_next(dump, match, actions, stats, ufid,
+                                    rbuffer, wbuffer)
+            : false);
+}
+
+int
+netdev_flow_put(struct netdev *netdev, struct match *match,
+                struct nlattr *actions, size_t act_len,
+                const ovs_u128 *ufid, struct offload_info *info,
+                struct dpif_flow_stats *stats)
+{
+    const struct netdev_class *class = netdev->netdev_class;
+
+    return (class->flow_put
+            ? class->flow_put(netdev, match, actions, act_len, ufid,
+                              info, stats)
+            : EOPNOTSUPP);
+}
+
+int
+netdev_flow_get(struct netdev *netdev, struct match *match,
+                struct nlattr **actions, const ovs_u128 *ufid,
+                struct dpif_flow_stats *stats, struct ofpbuf *buf)
+{
+    const struct netdev_class *class = netdev->netdev_class;
+
+    return (class->flow_get
+            ? class->flow_get(netdev, match, actions, ufid, stats, buf)
+            : EOPNOTSUPP);
+}
+
+int
+netdev_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
+                struct dpif_flow_stats *stats)
+{
+    const struct netdev_class *class = netdev->netdev_class;
+
+    return (class->flow_del
+            ? class->flow_del(netdev, ufid, stats)
+            : EOPNOTSUPP);
+}
+
+int
+netdev_init_flow_api(struct netdev *netdev)
+{
+    const struct netdev_class *class = netdev->netdev_class;
+
+    if (!netdev_is_flow_api_enabled()) {
+        return EOPNOTSUPP;
+    }
+
+    return (class->init_flow_api
+            ? class->init_flow_api(netdev)
+            : EOPNOTSUPP);
+}
+
+bool
+netdev_is_flow_api_enabled(void)
+{
+    return netdev_flow_api_enabled;
+}
+
+/* Protects below port hashmaps. */
+static struct ovs_mutex netdev_hmap_mutex = OVS_MUTEX_INITIALIZER;
+
+static struct hmap port_to_netdev OVS_GUARDED_BY(netdev_hmap_mutex)
+    = HMAP_INITIALIZER(&port_to_netdev);
+static struct hmap ifindex_to_port OVS_GUARDED_BY(netdev_hmap_mutex)
+    = HMAP_INITIALIZER(&ifindex_to_port);
+
+struct port_to_netdev_data {
+    struct hmap_node node;
+    struct netdev *netdev;
+    struct dpif_port dpif_port;
+    const void *obj;
+};
+
+struct ifindex_to_port_data {
+    struct hmap_node node;
+    int ifindex;
+    odp_port_t port;
+};
+
+static struct port_to_netdev_data *
+netdev_ports_lookup(odp_port_t port_no, const void *obj)
+    OVS_REQUIRES(netdev_hmap_mutex)
+{
+    size_t hash = hash_int(odp_to_u32(port_no), hash_pointer(obj, 0));
+    struct port_to_netdev_data *data;
+
+    HMAP_FOR_EACH_WITH_HASH(data, node, hash, &port_to_netdev) {
+            if (data->obj == obj && data->dpif_port.port_no == port_no) {
+                return data;
+            }
+    }
+    return NULL;
+}
+
+int
+netdev_ports_insert(struct netdev *netdev, const void *obj,
+                    struct dpif_port *dpif_port)
+{
+    size_t hash = hash_int(odp_to_u32(dpif_port->port_no),
+                           hash_pointer(obj, 0));
+    struct port_to_netdev_data *data;
+    struct ifindex_to_port_data *ifidx;
+    int ifindex = netdev_get_ifindex(netdev);
+
+    if (ifindex < 0) {
+        return ENODEV;
+    }
+
+    data = xzalloc(sizeof *data);
+    ifidx = xzalloc(sizeof *ifidx);
+
+    ovs_mutex_lock(&netdev_hmap_mutex);
+    if (netdev_ports_lookup(dpif_port->port_no, obj)) {
+        ovs_mutex_unlock(&netdev_hmap_mutex);
+        return EEXIST;
+    }
+
+    data->netdev = netdev_ref(netdev);
+    data->obj = obj;
+    dpif_port_clone(&data->dpif_port, dpif_port);
+
+    ifidx->ifindex = ifindex;
+    ifidx->port = dpif_port->port_no;
+
+    hmap_insert(&port_to_netdev, &data->node, hash);
+    hmap_insert(&ifindex_to_port, &ifidx->node, ifidx->ifindex);
+    ovs_mutex_unlock(&netdev_hmap_mutex);
+
+    netdev_init_flow_api(netdev);
+
+    return 0;
+}
+
+struct netdev *
+netdev_ports_get(odp_port_t port_no, const void *obj)
+{
+    struct port_to_netdev_data *data;
+    struct netdev *ret = NULL;
+
+    ovs_mutex_lock(&netdev_hmap_mutex);
+    data = netdev_ports_lookup(port_no, obj);
+    if (data) {
+        ret = netdev_ref(data->netdev);
+    }
+    ovs_mutex_unlock(&netdev_hmap_mutex);
+
+    return ret;
+}
+
+int
+netdev_ports_remove(odp_port_t port_no, const void *obj)
+{
+    struct port_to_netdev_data *data;
+    int ret = ENOENT;
+
+    ovs_mutex_lock(&netdev_hmap_mutex);
+
+    data = netdev_ports_lookup(port_no, obj);
+
+    if (data) {
+        dpif_port_destroy(&data->dpif_port);
+        netdev_close(data->netdev); /* unref and possibly close */
+        hmap_remove(&port_to_netdev, &data->node);
+        free(data);
+        ret = 0;
+    }
+
+    ovs_mutex_unlock(&netdev_hmap_mutex);
+
+    return ret;
+}
+
+odp_port_t
+netdev_ifindex_to_odp_port(int ifindex)
+{
+    struct ifindex_to_port_data *data;
+    odp_port_t ret = 0;
+
+    ovs_mutex_lock(&netdev_hmap_mutex);
+    HMAP_FOR_EACH_WITH_HASH(data, node, ifindex, &ifindex_to_port) {
+            if (data->ifindex == ifindex) {
+                ret = data->port;
+                break;
+            }
+    }
+    ovs_mutex_unlock(&netdev_hmap_mutex);
+
+    return ret;
+}
+
+void
+netdev_ports_flow_flush(const void *obj)
+{
+    struct port_to_netdev_data *data;
+
+    ovs_mutex_lock(&netdev_hmap_mutex);
+    HMAP_FOR_EACH(data, node, &port_to_netdev) {
+        if (data->obj == obj) {
+            netdev_flow_flush(data->netdev);
+        }
+    }
+    ovs_mutex_unlock(&netdev_hmap_mutex);
+}
+
+struct netdev_flow_dump **
+netdev_ports_flow_dump_create(const void *obj, int *ports)
+{
+    struct port_to_netdev_data *data;
+    struct netdev_flow_dump **dumps;
+    int count = 0;
+    int i = 0;
+
+    ovs_mutex_lock(&netdev_hmap_mutex);
+    HMAP_FOR_EACH(data, node, &port_to_netdev) {
+        if (data->obj == obj) {
+            count++;
+        }
+    }
+
+    dumps = count ? xzalloc(sizeof *dumps * count) : NULL;
+
+    HMAP_FOR_EACH(data, node, &port_to_netdev) {
+        if (data->obj == obj) {
+            if (netdev_flow_dump_create(data->netdev, &dumps[i])) {
+                continue;
+            }
+
+            dumps[i]->port = data->dpif_port.port_no;
+            i++;
+        }
+    }
+    ovs_mutex_unlock(&netdev_hmap_mutex);
+
+    *ports = i;
+    return dumps;
+}
+
+int
+netdev_ports_flow_del(const void *obj, const ovs_u128 *ufid,
+                      struct dpif_flow_stats *stats)
+{
+    struct port_to_netdev_data *data;
+
+    ovs_mutex_lock(&netdev_hmap_mutex);
+    HMAP_FOR_EACH(data, node, &port_to_netdev) {
+        if (data->obj == obj && !netdev_flow_del(data->netdev, ufid, stats)) {
+            ovs_mutex_unlock(&netdev_hmap_mutex);
+            return 0;
+        }
+    }
+    ovs_mutex_unlock(&netdev_hmap_mutex);
+
+    return ENOENT;
+}
+
+int
+netdev_ports_flow_get(const void *obj, struct match *match,
+                      struct nlattr **actions,
+                      const ovs_u128 *ufid,
+                      struct dpif_flow_stats *stats,
+                      struct ofpbuf *buf)
+{
+    struct port_to_netdev_data *data;
+
+    ovs_mutex_lock(&netdev_hmap_mutex);
+    HMAP_FOR_EACH(data, node, &port_to_netdev) {
+        if (data->obj == obj && !netdev_flow_get(data->netdev, match, actions,
+                                                 ufid, stats, buf)) {
+            ovs_mutex_unlock(&netdev_hmap_mutex);
+            return 0;
+        }
+    }
+    ovs_mutex_unlock(&netdev_hmap_mutex);
+    return ENOENT;
+}
+
+#ifdef __linux__
+static void
+netdev_ports_flow_init(void)
+{
+    struct port_to_netdev_data *data;
+
+    ovs_mutex_lock(&netdev_hmap_mutex);
+    HMAP_FOR_EACH(data, node, &port_to_netdev) {
+       netdev_init_flow_api(data->netdev);
+    }
+    ovs_mutex_unlock(&netdev_hmap_mutex);
+}
+
+void
+netdev_set_flow_api_enabled(const struct smap *ovs_other_config)
+{
+    if (smap_get_bool(ovs_other_config, "hw-offload", false)) {
+        static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
+
+        if (ovsthread_once_start(&once)) {
+            netdev_flow_api_enabled = true;
+
+            VLOG_INFO("netdev: Flow API Enabled");
+
+            tc_set_policy(smap_get_def(ovs_other_config, "tc-policy",
+                                       TC_POLICY_DEFAULT));
+
+            netdev_ports_flow_init();
+
+            ovsthread_once_done(&once);
+        }
+    }
+}
+#else
+void
+netdev_set_flow_api_enabled(const struct smap *ovs_other_config OVS_UNUSED)
+{
+}
+#endif
