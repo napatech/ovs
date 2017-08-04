@@ -353,6 +353,9 @@
     <column name="ip">
       The IPv4 address of the encapsulation tunnel endpoint.
     </column>
+    <column name="chassis_name">
+      The name of the chassis that created this encap.
+    </column>
   </table>
 
   <table name="Address_Set" title="Address Sets">
@@ -1515,6 +1518,47 @@
         </dd>
       </dl>
 
+      <dl>
+        <dt>
+          <code>log(<var>key</var>=<var>value</var>, </code>...<code>);</code>
+        </dt>
+
+        <dd>
+          <p>
+            Causes <code>ovn-controller</code> to log the packet on the chassis
+            that processes it.  Packet logging currently uses the same logging
+            mechanism as other Open vSwitch and OVN messages, which means that
+            whether and where log messages appear depends on the local logging
+            configuration that can be configured with <code>ovs-appctl</code>,
+            etc.
+          </p>
+          <p>
+            The <code>log</code> action takes zero or more of the following
+            key-value pair arguments that control what is logged:
+          </p>
+          <dl>
+            <dt><code>name=</code><var>string</var></dt>
+            <dd>
+              An optional name for the ACL.  The <var>string</var> is
+              currently limited to 64 bytes.
+            </dd>
+            <dt><code>severity=</code><var>level</var></dt>
+            <dd>
+              Indicates the severity of the event.  The <var>level</var> is one
+              of following (from more to less serious): <code>alert</code>,
+              <code>warning</code>, <code>notice</code>, <code>info</code>, or
+              <code>debug</code>.  If a severity is not provided, the default
+              is <code>info</code>.
+            </dd>
+            <dt><code>verdict=</code><var>value</var></dt>
+            <dd>
+              The verdict for packets matching the flow.  The value must be one
+              of <code>allow</code>, <code>deny</code>, or <code>reject</code>.
+            </dd>
+          </dl>
+        </dd>
+      </dl>
+
       <p>
         The following actions will likely be useful later, but they have not
         been thought out carefully.
@@ -1835,6 +1879,18 @@ tcp.flags = RST;
           </dd>
         </dl>
 
+      </column>
+
+      <column name="gateway_chassis">
+        <p>
+          A list of <ref table="Gateway_Chassis"/>.
+        </p>
+        <p>
+          This should only be populated for ports with
+          <ref column="type"/> set to <code>chassisredirect</code>.
+          This column defines the list of chassis used as gateways where
+          traffic will be redirected through.
+        </p>
       </column>
 
       <column name="tunnel_key">
@@ -2882,5 +2938,44 @@ tcp.flags = RST;
         Set of strings identifying columns and column:key pairs that authorized
         clients are allowed to modify.
     </column>
+  </table>
+  <table name="Gateway_Chassis">
+    <p>
+      Association of <ref table="Port_Binding"/> rows of
+      <ref table="Port_Binding" column="type"/> <code>chassisredirect</code> to
+      a <ref table="Chassis"/>. The traffic going out through a specific
+      <code>chassisredirect</code> port will be redirected to a chassis,
+      or a set of them in high availability configurations.
+    </p>
+
+    <column name="name">
+      <p>
+        Name of the <ref table="Gateway_Chassis"/>.
+      </p>
+      <p>
+        A suggested, but not required naming convention is
+        <code>${port_name}_${chassis_name}</code>.
+      </p>
+    </column>
+
+    <column name="chassis">
+      The <ref table="Chassis"/> to which we send the traffic.
+    </column>
+
+    <column name="priority">
+      This is the priority the specific <ref table="Chassis"/> among all
+      Gateway_Chassis belonging to the same <ref table="Port_Binding"/>.
+    </column>
+
+    <column name="options">
+      Reserved for future use.
+    </column>
+
+    <group title="Common Columns">
+      The overall purpose of these columns is described under <code>Common
+      Columns</code> at the beginning of this document.
+
+      <column name="external_ids"/>
+    </group>
   </table>
 </database>

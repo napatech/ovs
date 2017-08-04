@@ -131,6 +131,7 @@ void odp_portno_name_format(const struct hmap *portno_names,
  *  OVS_KEY_ATTR_CT_MARK                 4    --     4      8
  *  OVS_KEY_ATTR_CT_LABEL               16    --     4     20
  *  OVS_KEY_ATTR_CT_ORIG_TUPLE_IPV6     40    --     4     44
+ *  OVS_KEY_ATTR_CT_ORIG_TUPLE_IPV4      -    --     -      - (exclusive of_CT_ORIG_TUPLE_IPV6)
  *  OVS_KEY_ATTR_ETHERNET               12    --     4     16
  *  OVS_KEY_ATTR_ETHERTYPE               2     2     4      8  (outer VLAN ethertype)
  *  OVS_KEY_ATTR_VLAN                    2     2     4      8
@@ -196,7 +197,8 @@ int odp_flow_from_string(const char *s,
     ODP_SUPPORT_FIELD(bool, ct_state_nat, "CT state NAT")                    \
                                                                              \
     /* Conntrack original direction tuple matching * supported. */           \
-    ODP_SUPPORT_FIELD(bool, ct_orig_tuple, "CT orig tuple")
+    ODP_SUPPORT_FIELD(bool, ct_orig_tuple, "CT orig tuple")                  \
+    ODP_SUPPORT_FIELD(bool, ct_orig_tuple6, "CT orig tuple for IPv6")
 
 /* Indicates support for various fields. This defines how flows will be
  * serialised. */
@@ -274,7 +276,8 @@ enum slow_path_reason commit_odp_actions(const struct flow *,
                                          struct flow *base,
                                          struct ofpbuf *odp_actions,
                                          struct flow_wildcards *wc,
-                                         bool use_masked);
+                                         bool use_masked,
+                                         bool pending_encap);
 
 /* ofproto-dpif interface.
  *

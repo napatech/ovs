@@ -246,9 +246,11 @@ parse_options(int argc, char *argv[], struct shash *local_options)
 
         case OPT_COMMANDS:
             ctl_print_commands();
+            /* fall through */
 
         case OPT_OPTIONS:
             ctl_print_options(global_long_options);
+            /* fall through */
 
         case 'V':
             ovs_print_version(0, 0);
@@ -569,6 +571,7 @@ cmd_chassis_add(struct ctl_context *ctx)
         sbrec_encap_set_type(encaps[i], encap_type);
         sbrec_encap_set_ip(encaps[i], encap_ip);
         sbrec_encap_set_options(encaps[i], &options);
+        sbrec_encap_set_chassis_name(encaps[i], ch_name);
         i++;
     }
     sset_destroy(&encap_set);

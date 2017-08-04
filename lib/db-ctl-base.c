@@ -313,9 +313,9 @@ get_row_by_id(struct ctl_context *ctx,
         if (!id->key) {
             name = datum->n == 1 ? &datum->keys[0] : NULL;
         } else {
-            const union ovsdb_atom key
+            const union ovsdb_atom key_atom
                 = { .string = CONST_CAST(char *, id->key) };
-            unsigned int i = ovsdb_datum_find_key(datum, &key,
+            unsigned int i = ovsdb_datum_find_key(datum, &key_atom,
                                                   OVSDB_TYPE_STRING);
             name = i == UINT_MAX ? NULL : &datum->values[i];
         }
@@ -346,6 +346,8 @@ get_row_by_id(struct ctl_context *ctx,
         if (uuid->n == 1) {
             final = ovsdb_idl_get_row_for_uuid(ctx->idl, table,
                                                &uuid->keys[0].uuid);
+        } else {
+            final = NULL;
         }
     }
     return final;

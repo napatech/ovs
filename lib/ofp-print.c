@@ -122,7 +122,7 @@ ofp_print_packet_in(struct ds *string, const struct ofp_header *oh,
 {
     char reasonbuf[OFPUTIL_PACKET_IN_REASON_BUFSIZE];
     struct ofputil_packet_in_private pin;
-    const struct ofputil_packet_in *public = &pin.public;
+    const struct ofputil_packet_in *public = &pin.base;
     uint32_t buffer_id;
     size_t total_len;
     enum ofperr error;
@@ -168,7 +168,7 @@ ofp_print_packet_in(struct ds *string, const struct ofp_header *oh,
 
     if (public->userdata_len) {
         ds_put_cstr(string, " userdata=");
-        format_hex_arg(string, pin.public.userdata, pin.public.userdata_len);
+        format_hex_arg(string, pin.base.userdata, pin.base.userdata_len);
         ds_put_char(string, '\n');
     }
 
@@ -2180,7 +2180,8 @@ ofp_print_role_status_message(struct ds *string, const struct ofp_header *oh)
         break;
     case OFPCRR_N_REASONS:
     default:
-        OVS_NOT_REACHED();
+        ds_put_cstr(string, "(unknown)");
+        break;
     }
 }
 
@@ -2343,12 +2344,12 @@ ofp_async_config_reason_to_string(uint32_t reason,
 #define OFP_ASYNC_CONFIG_REASON_BUFSIZE (INT_STRLEN(int) + 1)
 static void
 ofp_print_set_async_config(struct ds *string, const struct ofp_header *oh,
-                           enum ofptype type)
+                           enum ofptype ofptype)
 {
     struct ofputil_async_cfg basis = OFPUTIL_ASYNC_CFG_INIT;
     struct ofputil_async_cfg ac;
 
-    bool is_reply = type == OFPTYPE_GET_ASYNC_REPLY;
+    bool is_reply = ofptype == OFPTYPE_GET_ASYNC_REPLY;
     enum ofperr error = ofputil_decode_set_async_config(oh, is_reply,
                                                         &basis, &ac);
     if (error) {

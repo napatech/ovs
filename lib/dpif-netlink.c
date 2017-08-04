@@ -972,7 +972,7 @@ dpif_netlink_rtnl_port_create_and_add(struct dpif_netlink *dpif,
     error = dpif_netlink_rtnl_port_create(netdev);
     if (error) {
         if (error != EOPNOTSUPP) {
-            VLOG_INFO_RL(&rl, "Failed to create %s with rtnetlink: %s",
+            VLOG_WARN_RL(&rl, "Failed to create %s with rtnetlink: %s",
                          netdev_get_name(netdev), ovs_strerror(error));
         }
         return error;
@@ -1160,7 +1160,7 @@ dpif_netlink_flow_flush(struct dpif *dpif_)
     flow.dp_ifindex = dpif->dp_ifindex;
 
     if (netdev_is_flow_api_enabled()) {
-        netdev_ports_flow_flush(DPIF_HMAP_KEY(dpif_));
+        netdev_ports_flow_flush(dpif_->dpif_class);
     }
 
     return dpif_netlink_flow_transact(&flow, NULL, NULL);
@@ -1487,7 +1487,7 @@ start_netdev_dump(const struct dpif *dpif_,
     ovs_mutex_lock(&dump->netdev_lock);
     dump->netdev_current_dump = 0;
     dump->netdev_dumps
-        = netdev_ports_flow_dump_create(DPIF_HMAP_KEY(dpif_),
+        = netdev_ports_flow_dump_create(dpif_->dpif_class,
                                         &dump->netdev_dumps_num);
     ovs_mutex_unlock(&dump->netdev_lock);
 }
@@ -2047,7 +2047,7 @@ parse_flow_get(struct dpif_netlink *dpif, struct dpif_flow_get *get)
     int err;
 
     ofpbuf_use_stack(&buf, &act_buf, sizeof act_buf);
-    err = netdev_ports_flow_get(DPIF_HMAP_KEY(&dpif->dpif), &match,
+    err = netdev_ports_flow_get(dpif->dpif.dpif_class, &match,
                                 &actions, get->ufid, &stats, &buf);
     if (err) {
         return err;
@@ -2074,6 +2074,7 @@ static int
 parse_flow_put(struct dpif_netlink *dpif, struct dpif_flow_put *put)
 {
     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
+    const struct dpif_class *dpif_class = dpif->dpif.dpif_class;
     struct match match;
     odp_port_t in_port;
     const struct nlattr *nla;
@@ -2100,7 +2101,7 @@ parse_flow_put(struct dpif_netlink *dpif, struct dpif_flow_put *put)
     }
 
     in_port = match.flow.in_port.odp_port;
-    dev = netdev_ports_get(in_port, DPIF_HMAP_KEY(&dpif->dpif));
+    dev = netdev_ports_get(in_port, dpif_class);
     if (!dev) {
         return EOPNOTSUPP;
     }
@@ -2120,7 +2121,7 @@ parse_flow_put(struct dpif_netlink *dpif, struct dpif_flow_put *put)
             }
 
             out_port = nl_attr_get_odp_port(nla);
-            outdev = netdev_ports_get(out_port, DPIF_HMAP_KEY(&dpif->dpif));
+            outdev = netdev_ports_get(out_port, dpif_class);
             if (!outdev) {
                 err = EOPNOTSUPP;
                 goto out;
@@ -2133,7 +2134,7 @@ parse_flow_put(struct dpif_netlink *dpif, struct dpif_flow_put *put)
         }
     }
 
-    info.port_hmap_obj = DPIF_HMAP_KEY(&dpif->dpif);
+    info.dpif_class = dpif_class;
     info.tp_dst_port = dst_port;
     err = netdev_flow_put(dev, &match,
                           CONST_CAST(struct nlattr *, put->actions),
@@ -2211,7 +2212,7 @@ try_send_to_netdev(struct dpif_netlink *dpif, struct dpif_op *op)
         }
 
         log_flow_del_message(&dpif->dpif, &this_module, del, 0);
-        err = netdev_ports_flow_del(DPIF_HMAP_KEY(&dpif->dpif), del->ufid,
+        err = netdev_ports_flow_del(dpif->dpif.dpif_class, del->ufid,
                                     del->stats);
         break;
     }
@@ -2847,13 +2848,13 @@ struct dpif_netlink_ct_dump_state {
 static int
 dpif_netlink_ct_dump_start(struct dpif *dpif OVS_UNUSED,
                            struct ct_dpif_dump_state **dump_,
-                           const uint16_t *zone)
+                           const uint16_t *zone, int *ptot_bkts)
 {
     struct dpif_netlink_ct_dump_state *dump;
     int err;
 
     dump = xzalloc(sizeof *dump);
-    err = nl_ct_dump_start(&dump->nl_ct_dump, zone);
+    err = nl_ct_dump_start(&dump->nl_ct_dump, zone, ptot_bkts);
     if (err) {
         free(dump);
         return err;
@@ -3434,8 +3435,9 @@ dpif_netlink_flow_from_ofpbuf(struct dpif_netlink_flow *flow,
 
 
 /*
- * If PACKET_TYPE attribute is present in 'data', it filters PACKET_TYPE out,
- * then puts 'data' to 'buf'.
+ * If PACKET_TYPE attribute is present in 'data', it filters PACKET_TYPE out.
+ * If the flow is not Ethernet, the OVS_KEY_ATTR_PACKET_TYPE is converted to
+ * OVS_KEY_ATTR_ETHERTYPE. Puts 'data' to 'buf'.
  */
 static void
 put_exclude_packet_type(struct ofpbuf *buf, uint16_t type,
@@ -3452,13 +3454,27 @@ put_exclude_packet_type(struct ofpbuf *buf, uint16_t type,
         size_t first_chunk_size = (uint8_t *)packet_type - (uint8_t *)data;
         size_t second_chunk_size = data_len - first_chunk_size
                                    - packet_type_len;
-        uint8_t *first_attr = NULL;
         struct nlattr *next_attr = nl_attr_next(packet_type);
+        size_t ofs;
 
-        first_attr = nl_msg_put_unspec_uninit(buf, type,
-                                              data_len - packet_type_len);
-        memcpy(first_attr, data, first_chunk_size);
-        memcpy(first_attr + first_chunk_size, next_attr, second_chunk_size);
+        ofs = nl_msg_start_nested(buf, type);
+        nl_msg_put(buf, data, first_chunk_size);
+        nl_msg_put(buf, next_attr, second_chunk_size);
+        if (!nl_attr_find__(data, data_len, OVS_KEY_ATTR_ETHERNET)) {
+            ovs_be16 pt = pt_ns_type_be(nl_attr_get_be32(packet_type));
+            const struct nlattr *nla;
+
+            nla = nl_attr_find(buf, NLA_HDRLEN, OVS_KEY_ATTR_ETHERTYPE);
+            if (nla) {
+                ovs_be16 *ethertype;
+
+                ethertype = CONST_CAST(ovs_be16 *, nl_attr_get(nla));
+                *ethertype = pt;
+            } else {
+                nl_msg_put_be16(buf, OVS_KEY_ATTR_ETHERTYPE, pt);
+            }
+        }
+        nl_msg_end_nested(buf, ofs);
     } else {
         nl_msg_put_unspec(buf, type, data, data_len);
     }

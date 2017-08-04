@@ -75,6 +75,9 @@ void flow_get_metadata(const struct flow *, struct match *flow_metadata);
 
 const char *ct_state_to_string(uint32_t state);
 uint32_t ct_state_from_string(const char *);
+bool parse_ct_state(const char *state_str, uint32_t default_state,
+                    uint32_t *ct_state, struct ds *);
+bool validate_ct_state(uint32_t state, struct ds *);
 void flow_clear_conntrack(struct flow *);
 
 char *flow_to_string(const struct flow *, const struct ofputil_port_map *);
@@ -121,7 +124,7 @@ void flow_set_mpls_tc(struct flow *, int idx, uint8_t tc);
 void flow_set_mpls_bos(struct flow *, int idx, uint8_t stack);
 void flow_set_mpls_lse(struct flow *, int idx, ovs_be32 lse);
 
-void flow_compose(struct dp_packet *, const struct flow *);
+bool flow_compose(struct dp_packet *, const struct flow *, size_t);
 
 bool parse_ipv6_ext_hdrs(const void **datap, size_t *sizep, uint8_t *nw_proto,
                          uint8_t *nw_frag);

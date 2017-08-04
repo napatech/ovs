@@ -50,7 +50,7 @@ struct conn_lookup_ctx {
     struct conn *conn;
     uint32_t hash;
     bool reply;
-    bool related;
+    bool icmp_related;
 };
 
 static bool conn_key_extract(struct conntrack *, struct dp_packet *,
@@ -127,10 +127,10 @@ conntrack_init(struct conntrack *ct)
     unsigned i, j;
     long long now = time_msec();
 
-    ct_rwlock_init(&ct->nat_resources_lock);
-    ct_rwlock_wrlock(&ct->nat_resources_lock);
+    ct_rwlock_init(&ct->resources_lock);
+    ct_rwlock_wrlock(&ct->resources_lock);
     hmap_init(&ct->nat_conn_keys);
-    ct_rwlock_unlock(&ct->nat_resources_lock);
+    ct_rwlock_unlock(&ct->resources_lock);
 
     for (i = 0; i < CONNTRACK_BUCKETS; i++) {
         struct conntrack_bucket *ctb = &ct->buckets[i];
@@ -179,14 +179,14 @@ conntrack_destroy(struct conntrack *ct)
         ct_lock_unlock(&ctb->lock);
         ct_lock_destroy(&ctb->lock);
     }
-    ct_rwlock_wrlock(&ct->nat_resources_lock);
+    ct_rwlock_wrlock(&ct->resources_lock);
     struct nat_conn_key_node *nat_conn_key_node;
     HMAP_FOR_EACH_POP (nat_conn_key_node, node, &ct->nat_conn_keys) {
         free(nat_conn_key_node);
     }
     hmap_destroy(&ct->nat_conn_keys);
-    ct_rwlock_unlock(&ct->nat_resources_lock);
-    ct_rwlock_destroy(&ct->nat_resources_lock);
+    ct_rwlock_unlock(&ct->resources_lock);
+    ct_rwlock_destroy(&ct->resources_lock);
 }
 
 static unsigned hash_to_bucket(uint32_t hash)
@@ -476,16 +476,16 @@ nat_clean(struct conntrack *ct, struct conn *conn,
     OVS_REQUIRES(ctb->lock)
 {
     long long now = time_msec();
-    ct_rwlock_wrlock(&ct->nat_resources_lock);
+    ct_rwlock_wrlock(&ct->resources_lock);
     nat_conn_keys_remove(&ct->nat_conn_keys, &conn->rev_key, ct->hash_basis);
-    ct_rwlock_unlock(&ct->nat_resources_lock);
+    ct_rwlock_unlock(&ct->resources_lock);
     ct_lock_unlock(&ctb->lock);
 
     uint32_t hash_rev_conn = conn_key_hash(&conn->rev_key, ct->hash_basis);
     unsigned bucket_rev_conn = hash_to_bucket(hash_rev_conn);
 
     ct_lock_lock(&ct->buckets[bucket_rev_conn].lock);
-    ct_rwlock_wrlock(&ct->nat_resources_lock);
+    ct_rwlock_wrlock(&ct->resources_lock);
 
     struct conn *rev_conn = conn_lookup(ct, &conn->rev_key, now);
 
@@ -504,7 +504,7 @@ nat_clean(struct conntrack *ct, struct conn *conn,
     }
     delete_conn(conn);
 
-    ct_rwlock_unlock(&ct->nat_resources_lock);
+    ct_rwlock_unlock(&ct->resources_lock);
     ct_lock_unlock(&ct->buckets[bucket_rev_conn].lock);
     ct_lock_lock(&ctb->lock);
 }
@@ -524,6 +524,7 @@ conn_clean(struct conntrack *ct, struct conn *conn,
     }
 }
 
+/* This function is called with the bucket lock held. */
 static struct conn *
 conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                struct conn_lookup_ctx *ctx, bool commit, long long now,
@@ -556,7 +557,7 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
 
         if (nat_action_info) {
             nc->nat_info = xmemdup(nat_action_info, sizeof *nc->nat_info);
-            ct_rwlock_wrlock(&ct->nat_resources_lock);
+            ct_rwlock_wrlock(&ct->resources_lock);
 
             bool nat_res = nat_select_range_tuple(ct, nc,
                                                   conn_for_un_nat_copy);
@@ -565,7 +566,7 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                 free(nc->nat_info);
                 nc->nat_info = NULL;
                 free (nc);
-                ct_rwlock_unlock(&ct->nat_resources_lock);
+                ct_rwlock_unlock(&ct->resources_lock);
                 return NULL;
             }
 
@@ -575,9 +576,9 @@ conn_not_found(struct conntrack *ct, struct dp_packet *pkt,
                 conn_for_un_nat_copy->conn_type = CT_CONN_TYPE_UN_NAT;
                 conn_for_un_nat_copy->nat_info = NULL;
             }
-            ct_rwlock_unlock(&ct->nat_resources_lock);
+            ct_rwlock_unlock(&ct->resources_lock);
 
-            nat_packet(pkt, nc, ctx->related);
+            nat_packet(pkt, nc, ctx->icmp_related);
         }
         hmap_insert(&ct->buckets[bucket].connections, &nc->node, ctx->hash);
         atomic_count_inc(&ct->n_conn);
@@ -593,7 +594,7 @@ conn_update_state(struct conntrack *ct, struct dp_packet *pkt,
 {
     bool create_new_conn = false;
 
-    if (ctx->related) {
+    if (ctx->icmp_related) {
         pkt->md.ct_state |= CS_RELATED;
         if (ctx->reply) {
             pkt->md.ct_state |= CS_REPLY_DIR;
@@ -634,7 +635,7 @@ create_un_nat_conn(struct conntrack *ct, struct conn *conn_for_un_nat_copy,
     uint32_t un_nat_hash = conn_key_hash(&nc->key, ct->hash_basis);
     unsigned un_nat_conn_bucket = hash_to_bucket(un_nat_hash);
     ct_lock_lock(&ct->buckets[un_nat_conn_bucket].lock);
-    ct_rwlock_rdlock(&ct->nat_resources_lock);
+    ct_rwlock_rdlock(&ct->resources_lock);
 
     struct conn *rev_conn = conn_lookup(ct, &nc->key, now);
 
@@ -649,7 +650,7 @@ create_un_nat_conn(struct conntrack *ct, struct conn *conn_for_un_nat_copy,
     } else {
         free(nc);
     }
-    ct_rwlock_unlock(&ct->nat_resources_lock);
+    ct_rwlock_unlock(&ct->resources_lock);
     ct_lock_unlock(&ct->buckets[un_nat_conn_bucket].lock);
 }
 
@@ -791,13 +792,13 @@ process_one(struct conntrack *ct, struct dp_packet *pkt,
     if (OVS_LIKELY(conn)) {
         create_new_conn = conn_update_state(ct, pkt, ctx, &conn, now, bucket);
         if (nat_action_info && !create_new_conn) {
-            handle_nat(pkt, conn, zone, ctx->reply, ctx->related);
+            handle_nat(pkt, conn, zone, ctx->reply, ctx->icmp_related);
         }
     } else if (check_orig_tuple(ct, pkt, ctx, now, &bucket, &conn,
                                 nat_action_info)) {
         create_new_conn = conn_update_state(ct, pkt, ctx, &conn, now, bucket);
     } else {
-        if (ctx->related) {
+        if (ctx->icmp_related) {
             pkt->md.ct_state = CS_INVALID;
         } else {
             create_new_conn = true;
@@ -1138,7 +1139,7 @@ checksum_valid(const struct conn_key *key, const void *data, size_t size,
 
 static inline bool
 check_l4_tcp(const struct conn_key *key, const void *data, size_t size,
-             const void *l3)
+             const void *l3, bool validate_checksum)
 {
     const struct tcp_header *tcp = data;
     if (size < sizeof *tcp) {
@@ -1150,12 +1151,12 @@ check_l4_tcp(const struct conn_key *key, const void *data, size_t size,
         return false;
     }
 
-    return checksum_valid(key, data, size, l3);
+    return validate_checksum ? checksum_valid(key, data, size, l3) : true;
 }
 
 static inline bool
 check_l4_udp(const struct conn_key *key, const void *data, size_t size,
-             const void *l3)
+             const void *l3, bool validate_checksum)
 {
     const struct udp_header *udp = data;
     if (size < sizeof *udp) {
@@ -1169,20 +1170,20 @@ check_l4_udp(const struct conn_key *key, const void *data, size_t size,
 
     /* Validation must be skipped if checksum is 0 on IPv4 packets */
     return (udp->udp_csum == 0 && key->dl_type == htons(ETH_TYPE_IP))
-           || checksum_valid(key, data, size, l3);
+           || (validate_checksum ? checksum_valid(key, data, size, l3) : true);
 }
 
 static inline bool
-check_l4_icmp(const void *data, size_t size)
+check_l4_icmp(const void *data, size_t size, bool validate_checksum)
 {
-    return csum(data, size) == 0;
+    return validate_checksum ? csum(data, size) == 0 : true;
 }
 
 static inline bool
 check_l4_icmp6(const struct conn_key *key, const void *data, size_t size,
-               const void *l3)
+               const void *l3, bool validate_checksum)
 {
-    return checksum_valid(key, data, size, l3);
+    return validate_checksum ? checksum_valid(key, data, size, l3) : true;
 }
 
 static inline bool
@@ -1218,7 +1219,8 @@ extract_l4_udp(struct conn_key *key, const void *data, size_t size)
 }
 
 static inline bool extract_l4(struct conn_key *key, const void *data,
-                              size_t size, bool *related, const void *l3);
+                              size_t size, bool *related, const void *l3,
+                              bool validate_checksum);
 
 static uint8_t
 reverse_icmp_type(uint8_t type)
@@ -1306,7 +1308,7 @@ extract_l4_icmp(struct conn_key *key, const void *data, size_t size,
         key->dst = inner_key.dst;
         key->nw_proto = inner_key.nw_proto;
 
-        ok = extract_l4(key, l4, tail - l4, NULL, l3);
+        ok = extract_l4(key, l4, tail - l4, NULL, l3, false);
         if (ok) {
             conn_key_reverse(key);
             *related = true;
@@ -1396,7 +1398,7 @@ extract_l4_icmp6(struct conn_key *key, const void *data, size_t size,
         key->dst = inner_key.dst;
         key->nw_proto = inner_key.nw_proto;
 
-        ok = extract_l4(key, l4, tail - l4, NULL, l3);
+        ok = extract_l4(key, l4, tail - l4, NULL, l3, false);
         if (ok) {
             conn_key_reverse(key);
             *related = true;
@@ -1415,28 +1417,29 @@ extract_l4_icmp6(struct conn_key *key, const void *data, size_t size,
  *
  * If 'related' is not NULL and an ICMP error packet is being
  * processed, the function will extract the key from the packet nested
- * in the ICMP paylod and set '*related' to true.
+ * in the ICMP payload and set '*related' to true.
  *
  * If 'related' is NULL, it means that we're already parsing a header nested
  * in an ICMP error.  In this case, we skip checksum and length validation. */
 static inline bool
 extract_l4(struct conn_key *key, const void *data, size_t size, bool *related,
-           const void *l3)
+           const void *l3, bool validate_checksum)
 {
     if (key->nw_proto == IPPROTO_TCP) {
-        return (!related || check_l4_tcp(key, data, size, l3))
-               && extract_l4_tcp(key, data, size);
+        return (!related || check_l4_tcp(key, data, size, l3,
+                validate_checksum)) && extract_l4_tcp(key, data, size);
     } else if (key->nw_proto == IPPROTO_UDP) {
-        return (!related || check_l4_udp(key, data, size, l3))
-               && extract_l4_udp(key, data, size);
+        return (!related || check_l4_udp(key, data, size, l3,
+                validate_checksum)) && extract_l4_udp(key, data, size);
     } else if (key->dl_type == htons(ETH_TYPE_IP)
                && key->nw_proto == IPPROTO_ICMP) {
-        return (!related || check_l4_icmp(data, size))
+        return (!related || check_l4_icmp(data, size, validate_checksum))
                && extract_l4_icmp(key, data, size, related);
     } else if (key->dl_type == htons(ETH_TYPE_IPV6)
                && key->nw_proto == IPPROTO_ICMPV6) {
-        return (!related || check_l4_icmp6(key, data, size, l3))
-               && extract_l4_icmp6(key, data, size, related);
+        return (!related || check_l4_icmp6(key, data, size, l3,
+                validate_checksum)) && extract_l4_icmp6(key, data, size,
+                related);
     } else {
         return false;
     }
@@ -1494,17 +1497,32 @@ conn_key_extract(struct conntrack *ct, struct dp_packet *pkt, ovs_be16 dl_type,
      */
     ctx->key.dl_type = dl_type;
     if (ctx->key.dl_type == htons(ETH_TYPE_IP)) {
-        ok = extract_l3_ipv4(&ctx->key, l3, tail - (char *) l3, NULL, true);
+        bool  hwol_bad_l3_csum = dp_packet_ip_checksum_bad(pkt);
+        if (hwol_bad_l3_csum) {
+            ok = false;
+        } else {
+            bool  hwol_good_l3_csum = dp_packet_ip_checksum_valid(pkt);
+            /* Validate the checksum only when hwol is not supported. */
+            ok = extract_l3_ipv4(&ctx->key, l3, tail - (char *) l3, NULL,
+                                 !hwol_good_l3_csum);
+        }
     } else if (ctx->key.dl_type == htons(ETH_TYPE_IPV6)) {
         ok = extract_l3_ipv6(&ctx->key, l3, tail - (char *) l3, NULL);
     } else {
         ok = false;
     }
 
+
     if (ok) {
-        if (extract_l4(&ctx->key, l4, tail - l4, &ctx->related, l3)) {
-            ctx->hash = conn_key_hash(&ctx->key, ct->hash_basis);
-            return true;
+        bool hwol_bad_l4_csum = dp_packet_l4_checksum_bad(pkt);
+        if (!hwol_bad_l4_csum) {
+            bool  hwol_good_l4_csum = dp_packet_l4_checksum_valid(pkt);
+            /* Validate the checksum only when hwol is not supported. */
+            if (extract_l4(&ctx->key, l4, tail - l4, &ctx->icmp_related, l3,
+                           !hwol_good_l4_csum)) {
+                ctx->hash = conn_key_hash(&ctx->key, ct->hash_basis);
+                return true;
+            }
         }
     }
 
@@ -1783,6 +1801,7 @@ nat_select_range_tuple(struct conntrack *ct, const struct conn *conn,
     return false;
 }
 
+/* This function must be called with the ct->resources lock taken. */
 static struct nat_conn_key_node *
 nat_conn_keys_lookup(struct hmap *nat_conn_keys,
                      const struct conn_key *key,
@@ -1801,6 +1820,7 @@ nat_conn_keys_lookup(struct hmap *nat_conn_keys,
     return NULL;
 }
 
+/* This function must be called with the ct->resources write lock taken. */
 static void
 nat_conn_keys_remove(struct hmap *nat_conn_keys, const struct conn_key *key,
                      uint32_t basis)
@@ -1822,6 +1842,7 @@ nat_conn_keys_remove(struct hmap *nat_conn_keys, const struct conn_key *key,
 static void
 conn_key_lookup(struct conntrack_bucket *ctb, struct conn_lookup_ctx *ctx,
                 long long now)
+    OVS_REQUIRES(ctb->lock)
 {
     uint32_t hash = ctx->hash;
     struct conn *conn;
@@ -1927,7 +1948,7 @@ conn_key_to_tuple(const struct conn_key *key, struct ct_dpif_tuple *tuple)
 
 static void
 conn_to_ct_dpif_entry(const struct conn *conn, struct ct_dpif_entry *entry,
-                      long long now)
+                      long long now, int bkt)
 {
     struct ct_l4_proto *class;
     long long expiration;
@@ -1950,11 +1971,12 @@ conn_to_ct_dpif_entry(const struct conn *conn, struct ct_dpif_entry *entry,
     if (class->conn_get_protoinfo) {
         class->conn_get_protoinfo(conn, &entry->protoinfo);
     }
+    entry->bkt = bkt;
 }
 
 int
 conntrack_dump_start(struct conntrack *ct, struct conntrack_dump *dump,
-                     const uint16_t *pzone)
+                     const uint16_t *pzone, int *ptot_bkts)
 {
     memset(dump, 0, sizeof(*dump));
     if (pzone) {
@@ -1962,6 +1984,8 @@ conntrack_dump_start(struct conntrack *ct, struct conntrack_dump *dump,
         dump->filter_zone = true;
     }
     dump->ct = ct;
+
+    *ptot_bkts = CONNTRACK_BUCKETS;
 
     return 0;
 }
@@ -1987,7 +2011,7 @@ conntrack_dump_next(struct conntrack_dump *dump, struct ct_dpif_entry *entry)
             INIT_CONTAINER(conn, node, node);
             if ((!dump->filter_zone || conn->key.zone == dump->zone) &&
                  (conn->conn_type != CT_CONN_TYPE_UN_NAT)) {
-                conn_to_ct_dpif_entry(conn, entry, now);
+                conn_to_ct_dpif_entry(conn, entry, now, dump->bucket);
                 break;
             }
             /* Else continue, until we find an entry in the appropriate zone

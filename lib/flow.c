@@ -1051,6 +1051,74 @@ ct_state_from_string(const char *s)
     return 0;
 }
 
+/* Parses conntrack state from 'state_str'.  If it is parsed successfully,
+ * stores the parsed ct_state in 'ct_state', and returns true.  Otherwise,
+ * returns false, and reports error message in 'ds'. */
+bool
+parse_ct_state(const char *state_str, uint32_t default_state,
+               uint32_t *ct_state, struct ds *ds)
+{
+    uint32_t state = default_state;
+    char *state_s = xstrdup(state_str);
+    char *save_ptr = NULL;
+
+    for (char *cs = strtok_r(state_s, ", ", &save_ptr); cs;
+         cs = strtok_r(NULL, ", ", &save_ptr)) {
+        uint32_t bit = ct_state_from_string(cs);
+        if (!bit) {
+            ds_put_format(ds, "%s: unknown connection tracking state flag",
+                          cs);
+            return false;
+        }
+        state |= bit;
+    }
+
+    *ct_state = state;
+    free(state_s);
+
+    return true;
+}
+
+/* Checks the given conntrack state 'state' according to the constraints
+ * listed in ovs-fields (7).  Returns true if it is valid.  Otherwise, returns
+ * false, and reports error in 'ds'. */
+bool
+validate_ct_state(uint32_t state, struct ds *ds)
+{
+    bool valid_ct_state = true;
+    struct ds d_str = DS_EMPTY_INITIALIZER;
+
+    format_flags(&d_str, ct_state_to_string, state, '|');
+
+    if (state && !(state & CS_TRACKED)) {
+        ds_put_format(ds, "%s: invalid connection state: "
+                      "If \"trk\" is unset, no other flags are set\n",
+                      ds_cstr(&d_str));
+        valid_ct_state = false;
+    }
+    if (state & CS_INVALID && state & ~(CS_TRACKED | CS_INVALID)) {
+        ds_put_format(ds, "%s: invalid connection state: "
+                      "when \"inv\" is set, only \"trk\" may also be set\n",
+                      ds_cstr(&d_str));
+        valid_ct_state = false;
+    }
+    if (state & CS_NEW && state & CS_ESTABLISHED) {
+        ds_put_format(ds, "%s: invalid connection state: "
+                      "\"new\" and \"est\" are mutually exclusive\n",
+                      ds_cstr(&d_str));
+        valid_ct_state = false;
+    }
+    if (state & CS_NEW && state & CS_REPLY_DIR) {
+        ds_put_format(ds, "%s: invalid connection state: "
+                      "\"new\" and \"rpy\" are mutually exclusive\n",
+                      ds_cstr(&d_str));
+        valid_ct_state = false;
+    }
+
+    ds_destroy(&d_str);
+    return valid_ct_state;
+}
+
 /* Clears the fields in 'flow' associated with connection tracking. */
 void
 flow_clear_conntrack(struct flow *flow)
@@ -2074,7 +2142,7 @@ flow_mask_hash_fields(const struct flow *flow, struct flow_wildcards *wc,
             memset(&wc->masks.tp_src, 0xff, sizeof wc->masks.tp_src);
             memset(&wc->masks.tp_dst, 0xff, sizeof wc->masks.tp_dst);
         }
-        /* no break */
+        /* fall through */
     case NX_HASH_FIELDS_SYMMETRIC_L3L4:
         if (flow->dl_type == htons(ETH_TYPE_IP)) {
             memset(&wc->masks.nw_src, 0xff, sizeof wc->masks.nw_src);
@@ -2638,37 +2706,81 @@ flow_compose_l4_csum(struct dp_packet *p, const struct flow *flow,
         if (flow->nw_proto == IPPROTO_TCP) {
             struct tcp_header *tcp = dp_packet_l4(p);
 
-            /* Checksum has already been zeroed by put_zeros call in
-             * flow_compose_l4(). */
+            tcp->tcp_csum = 0;
             tcp->tcp_csum = csum_finish(csum_continue(pseudo_hdr_csum,
                                                       tcp, l4_len));
         } else if (flow->nw_proto == IPPROTO_UDP) {
             struct udp_header *udp = dp_packet_l4(p);
 
-            /* Checksum has already been zeroed by put_zeros call in
-             * flow_compose_l4(). */
+            udp->udp_csum = 0;
             udp->udp_csum = csum_finish(csum_continue(pseudo_hdr_csum,
                                                       udp, l4_len));
         } else if (flow->nw_proto == IPPROTO_ICMP) {
             struct icmp_header *icmp = dp_packet_l4(p);
 
-            /* Checksum has already been zeroed by put_zeros call in
-             * flow_compose_l4(). */
+            icmp->icmp_csum = 0;
             icmp->icmp_csum = csum(icmp, l4_len);
         } else if (flow->nw_proto == IPPROTO_IGMP) {
             struct igmp_header *igmp = dp_packet_l4(p);
 
-            /* Checksum has already been zeroed by put_zeros call in
-             * flow_compose_l4(). */
+            igmp->igmp_csum = 0;
             igmp->igmp_csum = csum(igmp, l4_len);
         } else if (flow->nw_proto == IPPROTO_ICMPV6) {
             struct icmp6_hdr *icmp = dp_packet_l4(p);
 
-            /* Checksum has already been zeroed by put_zeros call in
-             * flow_compose_l4(). */
+            icmp->icmp6_cksum = 0;
             icmp->icmp6_cksum = (OVS_FORCE uint16_t)
                 csum_finish(csum_continue(pseudo_hdr_csum, icmp, l4_len));
         }
+    }
+}
+
+/* Increase the size of packet composed by 'flow_compose_minimal'
+ * up to 'size' bytes.  Fixes all the required packet headers like
+ * ip/udp lengths and l3/l4 checksums.
+ *
+ * 'size' needs to be larger then the current packet size.  */
+static void
+packet_expand(struct dp_packet *p, const struct flow *flow, size_t size)
+{
+    size_t extra_size;
+
+    ovs_assert(size > dp_packet_size(p));
+
+    extra_size = size - dp_packet_size(p);
+    dp_packet_put_zeros(p, extra_size);
+
+    if (flow->dl_type == htons(FLOW_DL_TYPE_NONE)) {
+        struct eth_header *eth = dp_packet_eth(p);
+
+        eth->eth_type = htons(dp_packet_size(p));
+    } else if (dl_type_is_ip_any(flow->dl_type)) {
+        uint32_t pseudo_hdr_csum;
+        size_t l4_len = (char *) dp_packet_tail(p) - (char *) dp_packet_l4(p);
+
+        if (flow->dl_type == htons(ETH_TYPE_IP)) {
+            struct ip_header *ip = dp_packet_l3(p);
+
+            ip->ip_tot_len = htons(p->l4_ofs - p->l3_ofs + l4_len);
+            ip->ip_csum = 0;
+            ip->ip_csum = csum(ip, sizeof *ip);
+
+            pseudo_hdr_csum = packet_csum_pseudoheader(ip);
+        } else { /* ETH_TYPE_IPV6 */
+            struct ovs_16aligned_ip6_hdr *nh = dp_packet_l3(p);
+
+            nh->ip6_plen = htons(l4_len);
+            pseudo_hdr_csum = packet_csum_pseudoheader6(nh);
+        }
+
+        if ((!(flow->nw_frag & FLOW_NW_FRAG_ANY)
+             || !(flow->nw_frag & FLOW_NW_FRAG_LATER))
+            && flow->nw_proto == IPPROTO_UDP) {
+            struct udp_header *udp = dp_packet_l4(p);
+
+            udp->udp_len = htons(l4_len + extra_size);
+        }
+        flow_compose_l4_csum(p, flow, pseudo_hdr_csum);
     }
 }
 
@@ -2676,9 +2788,12 @@ flow_compose_l4_csum(struct dp_packet *p, const struct flow *flow,
  * 'flow'.
  *
  * (This is useful only for testing, obviously, and the packet isn't really
- * valid.  Lots of fields are just zeroed.) */
-void
-flow_compose(struct dp_packet *p, const struct flow *flow)
+ * valid.  Lots of fields are just zeroed.)
+ *
+ * The created packet has minimal packet size, just big enough to hold
+ * the packet header fields.  */
+static void
+flow_compose_minimal(struct dp_packet *p, const struct flow *flow)
 {
     uint32_t pseudo_hdr_csum;
     size_t l4_len;
@@ -2782,6 +2897,33 @@ flow_compose(struct dp_packet *p, const struct flow *flow)
             push_mpls(p, flow->dl_type, flow->mpls_lse[--n]);
         }
     }
+}
+
+/* Puts into 'p' a Ethernet frame of size 'size' that flow_extract() would
+ * parse as having the given 'flow'.
+ *
+ * When 'size' is zero, 'p' is a minimal size packet that only big enough
+ * to contains all packet headers.
+ *
+ * When 'size' is larger than the minimal packet size, the packet will
+ * be expended to 'size' with the payload set to zero.
+ *
+ * Return 'true' if the packet is successfully created. 'false' otherwise.
+ * Note, when 'size' is set to zero, this function always returns true.  */
+bool
+flow_compose(struct dp_packet *p, const struct flow *flow, size_t size)
+{
+    flow_compose_minimal(p, flow);
+
+    if (size && size < dp_packet_size(p)) {
+        return false;
+    }
+
+    if (size > dp_packet_size(p)) {
+        packet_expand(p, flow, size);
+    }
+
+    return true;
 }
 
 /* Compressed flow. */

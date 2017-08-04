@@ -39,6 +39,7 @@
 /test-rstp
 /test-sflow
 /test-sha1
+/test-skiplist
 /test-stp
 /test-strtok_r
 /test-timeval
@@ -52,3 +53,5 @@
 /testsuite.log
 /test-lib
 /testsuite.tmp.orig
+/valgrind.[0-9]*
+/valgrind/

@@ -108,7 +108,7 @@ struct conntrack_dump {
 struct ct_dpif_entry;
 
 int conntrack_dump_start(struct conntrack *, struct conntrack_dump *,
-                         const uint16_t *pzone);
+                         const uint16_t *pzone, int *);
 int conntrack_dump_next(struct conntrack_dump *, struct ct_dpif_entry *);
 int conntrack_dump_done(struct conntrack_dump *);
 
@@ -271,7 +271,7 @@ struct conntrack {
      * it is taken after a bucket lock and given back before that
      * bucket unlock.
      */
-    struct ct_rwlock nat_resources_lock;
+    struct ct_rwlock resources_lock;
 
 };
 

@@ -23,7 +23,16 @@ AC_DEFUN([OVS_ENABLE_WERROR],
    AC_CONFIG_COMMANDS_PRE(
      [if test "X$enable_Werror" = Xyes; then
         OVS_CFLAGS="$OVS_CFLAGS -Werror"
-      fi])])
+      fi])
+
+   # Unless --enable-Werror is specified, report but do not fail the build
+   # for errors reported by flake8.
+   if test "X$enable_Werror" = Xyes; then
+     FLAKE8_WERROR=
+   else
+     FLAKE8_WERROR=-
+   fi
+   AC_SUBST([FLAKE8_WERROR])])
 
 dnl OVS_CHECK_LINUX
 dnl
@@ -134,7 +143,7 @@ AC_DEFUN([OVS_CHECK_LINUX], [
     AC_MSG_RESULT([$kversion])
 
     if test "$version" -ge 4; then
-       if test "$version" = 4 && test "$patchlevel" -le 11; then
+       if test "$version" = 4 && test "$patchlevel" -le 12; then
           : # Linux 4.x
        else
           AC_ERROR([Linux kernel in $KBUILD is version $kversion, but version newer than 4.11.x is not supported (please refer to the FAQ for advice)])
@@ -206,9 +215,10 @@ AC_DEFUN([OVS_CHECK_DPDK], [
         DPDK_INCLUDE="$with_dpdk/include"
         # If 'with_dpdk' is passed install directory, point to headers
         # installed in $DESTDIR/$prefix/include/dpdk
-        AC_CHECK_FILE([$DPDK_INCLUDE/rte_config.h], [],
-                      [AC_CHECK_FILE([$DPDK_INCLUDE/dpdk/rte_config.h],
-                                     [DPDK_INCLUDE=$DPDK_INCLUDE/dpdk], [])])
+        if test ! -e "$DPDK_INCLUDE/rte_config.h" && \
+           test -e "$DPDK_INCLUDE/dpdk/rte_config.h"; then
+           DPDK_INCLUDE=$DPDK_INCLUDE/dpdk
+        fi
         DPDK_LIB_DIR="$with_dpdk/lib"
         ;;
     esac
@@ -528,6 +538,7 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
                   [OVS_DEFINE([HAVE_PCPU_SW_NETSTATS])])
   OVS_GREP_IFELSE([$KSRC/include/linux/netdevice.h], [netif_needs_gso.*net_device],
                   [OVS_DEFINE([HAVE_NETIF_NEEDS_GSO_NETDEV])])
+  OVS_GREP_IFELSE([$KSRC/include/linux/netdevice.h], [skb_csum_hwoffload_help])
   OVS_GREP_IFELSE([$KSRC/include/linux/netdevice.h], [udp_offload])
   OVS_GREP_IFELSE([$KSRC/include/linux/netdevice.h], [udp_offload.*uoff],
                   [OVS_DEFINE([HAVE_UDP_OFFLOAD_ARG_UOFF])])
@@ -642,6 +653,7 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
   OVS_GREP_IFELSE([$KSRC/include/linux/skbuff.h], [skb_postpush_rcsum])
   OVS_GREP_IFELSE([$KSRC/include/linux/skbuff.h], [lco_csum])
   OVS_GREP_IFELSE([$KSRC/include/linux/skbuff.h], [skb_nfct])
+  OVS_GREP_IFELSE([$KSRC/include/linux/skbuff.h], [skb_put_zero])
 
   OVS_GREP_IFELSE([$KSRC/include/linux/types.h], [bool],
                   [OVS_DEFINE([HAVE_BOOL_TYPE])])
@@ -707,6 +719,9 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
   OVS_GREP_IFELSE([$KSRC/include/linux/if_vlan.h], [skb_vlan_tagged])
   OVS_GREP_IFELSE([$KSRC/include/linux/if_vlan.h], [eth_type_vlan])
 
+  OVS_FIND_PARAM_IFELSE([$KSRC/include/net/dst_metadata.h],
+                        [metadata_dst_alloc], [metadata_type])
+
   OVS_GREP_IFELSE([$KSRC/include/linux/u64_stats_sync.h], [u64_stats_fetch_begin_irq])
 
   OVS_GREP_IFELSE([$KSRC/include/net/vxlan.h], [struct vxlan_metadata],
@@ -738,6 +753,13 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
                         [OVS_DEFINE([HAVE_DEFRAG_ENABLE_TAKES_NET])])
   OVS_GREP_IFELSE([$KSRC/include/net/genetlink.h], [family_list],
                         [OVS_DEFINE([HAVE_GENL_FAMILY_LIST])])
+  OVS_FIND_FIELD_IFELSE([$KSRC/include/linux/netdevice.h], [net_device],
+                        [needs_free_netdev],
+                        [OVS_DEFINE([HAVE_NEEDS_FREE_NETDEV])])
+  OVS_FIND_FIELD_IFELSE([$KSRC/include/net/vxlan.h], [vxlan_dev], [cfg],
+                        [OVS_DEFINE([HAVE_VXLAN_DEV_CFG])])
+  OVS_GREP_IFELSE([$KSRC/include/net/netfilter/nf_conntrack_helper.h],
+                  [nf_conntrack_helper_put])
 
   if cmp -s datapath/linux/kcompat.h.new \
             datapath/linux/kcompat.h >/dev/null 2>&1; then
@@ -951,6 +973,14 @@ AC_DEFUN([OVS_ENABLE_SPARSE],
    AC_SUBST([SPARSE])
    AC_CONFIG_COMMANDS_PRE(
      [CC='$(if $(C),env REAL_CC="'"$CC"'" CHECK="$(SPARSE) -I $(top_srcdir)/include/sparse $(SPARSEFLAGS) $(SPARSE_EXTRA_INCLUDES) " cgcc $(CGCCFLAGS),'"$CC"')'])])
+
+dnl OVS_CTAGS_IDENTIFIERS
+dnl
+dnl ctags ignores symbols with extras identifiers. This builds a list of
+dnl specially handled identifiers to be ignored.
+AC_DEFUN([OVS_CTAGS_IDENTIFIERS],
+    AC_SUBST([OVS_CTAGS_IDENTIFIERS_LIST],
+           [`printf %s '-I "'; sed -n 's/^#define \(OVS_[A-Z_]\+\)(\.\.\.)$/\1+/p' ${srcdir}/include/openvswitch/compiler.h  | tr \\\n ' ' ; printf '"'`] ))
 
 dnl OVS_PTHREAD_SET_NAME
 dnl

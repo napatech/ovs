@@ -23,6 +23,7 @@ AM_INIT_AUTOMAKE([tar-pax])
 
 AC_PROG_CC_C99
 AM_PROG_CC_C_O
+AC_PROG_CXX
 AC_PROG_CPP
 AC_PROG_MKDIR_P
 AC_PROG_FGREP
@@ -106,7 +107,11 @@ AC_CHECK_DECLS([sys_siglist], [], [], [[#include <signal.h>]])
 AC_CHECK_MEMBERS([struct stat.st_mtim.tv_nsec, struct stat.st_mtimensec],
   [], [], [[#include <sys/stat.h>]])
 AC_CHECK_MEMBERS([struct ifreq.ifr_flagshigh], [], [], [[#include <net/if.h>]])
-AC_CHECK_FUNCS([mlockall strnlen getloadavg statvfs getmntent_r])
+AC_CHECK_MEMBERS([struct mmsghdr.msg_len], [], [], [[#include <sys/socket.h>]])
+AC_CHECK_MEMBERS([struct sockaddr_in6.sin6_scope_id], [], [],
+  [[#include <sys/socket.h>
+#include <netinet/in.h>]])
+AC_CHECK_FUNCS([mlockall strnlen getloadavg statvfs getmntent_r sendmmsg])
 AC_CHECK_HEADERS([mntent.h sys/statvfs.h linux/types.h linux/if_ether.h stdatomic.h])
 AC_CHECK_HEADERS([net/if_mib.h], [], [], [[#include <sys/types.h>
 #include <net/if.h>]])
@@ -131,6 +136,7 @@ OVS_CHECK_POSIX_AIO
 OVS_CHECK_PTHREAD_SET_NAME
 OVS_CHECK_LINUX_HOST
 OVS_LIBTOOL_VERSIONS
+OVS_CHECK_CXX
 AX_FUNC_POSIX_MEMALIGN
 
 OVS_CHECK_INCLUDE_NEXT([stdio.h string.h])
@@ -170,6 +176,7 @@ OVS_CONDITIONAL_CC_OPTION([-Wno-unused], [HAVE_WNO_UNUSED])
 OVS_CONDITIONAL_CC_OPTION([-Wno-unused-parameter], [HAVE_WNO_UNUSED_PARAMETER])
 OVS_ENABLE_WERROR
 OVS_ENABLE_SPARSE
+OVS_CTAGS_IDENTIFIERS
 
 AC_ARG_VAR(KARCH, [Kernel Architecture String])
 AC_SUBST(KARCH)

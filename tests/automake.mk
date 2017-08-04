@@ -94,6 +94,7 @@ TESTSUITE_AT = \
 	tests/vtep-ctl.at \
 	tests/auto-attach.at \
 	tests/ovn.at \
+	tests/ovn-northd.at \
 	tests/ovn-nbctl.at \
 	tests/ovn-sbctl.at \
 	tests/ovn-controller.at \
@@ -115,6 +116,7 @@ SYSTEM_USERSPACE_TESTSUITE_AT = \
 SYSTEM_TESTSUITE_AT = \
 	tests/system-common-macros.at \
 	tests/system-ovn.at \
+	tests/system-layer3-tunnels.at \
 	tests/system-traffic.at
 
 SYSTEM_OFFLOADS_TESTSUITE_AT = \
@@ -185,6 +187,7 @@ valgrind_wrappers = \
 	tests/valgrind/ovsdb-tool \
 	tests/valgrind/ovstest \
 	tests/valgrind/test-ovsdb \
+	tests/valgrind/test-skiplist \
 	tests/valgrind/test-strtok_r \
 	tests/valgrind/test-type-props
 
@@ -345,6 +348,7 @@ tests_ovstest_SOURCES = \
 	tests/test-rstp.c \
 	tests/test-sflow.c \
 	tests/test-sha1.c \
+	tests/test-skiplist.c \
 	tests/test-stp.c \
 	tests/test-unixctl.c \
 	tests/test-util.c \

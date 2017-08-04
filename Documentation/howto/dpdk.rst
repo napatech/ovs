@@ -276,27 +276,12 @@ common for use cases involving East-West traffic only.
 Rx Checksum Offload
 -------------------
 
-By default, DPDK physical ports are enabled with Rx checksum offload. Rx
-checksum offload can be configured on a DPDK physical port either when adding
-or at run time.
-
-To disable Rx checksum offload when adding a DPDK port dpdk-p0::
-
-    $ ovs-vsctl add-port br0 dpdk-p0 -- set Interface dpdk-p0 type=dpdk \
-      options:dpdk-devargs=0000:01:00.0 options:rx-checksum-offload=false
-
-Similarly to disable the Rx checksum offloading on a existing DPDK port dpdk-p0::
-
-    $ ovs-vsctl set Interface dpdk-p0 options:rx-checksum-offload=false
+By default, DPDK physical ports are enabled with Rx checksum offload.
 
 Rx checksum offload can offer performance improvement only for tunneling
 traffic in OVS-DPDK because the checksum validation of tunnel packets is
 offloaded to the NIC. Also enabling Rx checksum may slightly reduce the
 performance of non-tunnel traffic, specifically for smaller size packet.
-DPDK vectorization is disabled when checksum offloading is configured on DPDK
-physical ports which in turn effects the non-tunnel traffic performance.
-So it is advised to turn off the Rx checksum offload for non-tunnel traffic use
-cases to achieve the best performance.
 
 .. _extended-statistics:
 
@@ -346,7 +331,28 @@ Detaching will be performed while processing del-port command::
 
     $ ovs-vsctl del-port dpdkx
 
-This feature is not supported with VFIO and does not work with some NICs.
+Sometimes, the del-port command may not detach the device.
+Detaching can be confirmed by the appearance of an INFO log.
+For example::
+
+    INFO|Device '0000:04:00.1' has been detached
+
+If the log is not seen, then the port can be detached using::
+
+$ ovs-appctl netdev-dpdk/detach 0000:01:00.0
+
+Detaching can be confirmed by console output::
+
+    Device '0000:04:00.1' has been detached
+
+.. warning::
+    Detaching should not be done if a device is known to be non-detachable, as
+    this may cause the device to behave improperly when added back with
+    add-port. The Chelsio Terminator adapters which use the cxgbe driver seem
+    to be an example of this behavior; check the driver documentation if this
+    is suspected.
+
+This feature does not work with some NICs.
 For more information please refer to the `DPDK Port Hotplug Framework
 <http://dpdk.org/doc/guides/prog_guide/port_hotplug_framework.html#hotplug>`__.
 
@@ -543,15 +549,15 @@ described in :ref:`dpdk-testpmd`. Once compiled, run the application::
 
 When you finish testing, bind the vNICs back to kernel::
 
-    $ $DPDK_DIR/tools/dpdk-devbind.py --bind=virtio-pci 0000:00:03.0
-    $ $DPDK_DIR/tools/dpdk-devbind.py --bind=virtio-pci 0000:00:04.0
+    $ $DPDK_DIR/usertools/dpdk-devbind.py --bind=virtio-pci 0000:00:03.0
+    $ $DPDK_DIR/usertools/dpdk-devbind.py --bind=virtio-pci 0000:00:04.0
 
 .. note::
 
   Valid PCI IDs must be passed in above example. The PCI IDs can be retrieved
   like so::
 
-      $ $DPDK_DIR/tools/dpdk-devbind.py --status
+      $ $DPDK_DIR/usertools/dpdk-devbind.py --status
 
 More information on the dpdkvhostuser ports can be found in
 :doc:`/topics/dpdk/vhost-user`.
