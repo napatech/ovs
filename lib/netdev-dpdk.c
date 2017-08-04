@@ -1451,6 +1451,12 @@ for (it = 0; it < (size); it++) {\
                 VLOG_ERR("failed to allocate RTE_FLOW eth item");
                 goto error_exit;
             }
+        } else {
+        	/* Need to tie it to ETH */
+            flow->items[flow->max].type = RTE_FLOW_ITEM_TYPE_ETH;
+            flow->items[flow->max].spec = (void *)NULL;
+            flow->items[flow->max].mask = (void *)NULL;
+            INC_FLOW_ITEM_CNT(flow->max);
         }
 
         /* Check if any ip_hdr info must be specified */
