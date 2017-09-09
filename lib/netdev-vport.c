@@ -951,7 +951,7 @@ netdev_vport_get_ifindex(const struct netdev *netdev_)
     NULL,                   /* rx_recv */                   \
     NULL,                   /* rx_wait */                   \
     NULL,                   /* rx_drain */                  \
-    NETDEV_FLOW_OFFLOAD_API
+    NETDEV_FLOW_OFFLOAD_API,                                \
     NULL,                   /* hw_flow_offload */           \
     NULL,                   /* get_flow_stats */
 

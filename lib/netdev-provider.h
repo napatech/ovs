@@ -859,7 +859,7 @@ struct netdev_class {
     /* Initializies the netdev flow api.
      * Return 0 if successful, otherwise returns a positive errno value. */
     int (*init_flow_api)(struct netdev *);
-  
+
     int (*hw_flow_offload)(struct netdev *netdev,
                           const struct match *match, int hw_port_id,
                           const struct nlattr *nl_actions, size_t actions_len,

@@ -3214,8 +3214,6 @@ dp_netdev_process_rxq_port(struct dp_netdev_pmd_thread *pmd,
     dp_packet_batch_init(&batch);
     error = netdev_rxq_recv(rx, &batch);
     
-    cycles_count_end(pmd, PMD_CYCLES_POLLING);
-
 	if (port->hw_port_id < MAX_HW_PORT_CNT) {
 		struct netdev_flow_stats *flow_stats = NULL;
 		int i;
@@ -3255,6 +3253,7 @@ dp_netdev_process_rxq_port(struct dp_netdev_pmd_thread *pmd,
 	        hw_local_port_map[id & HW_PORT_MASK]:OVS_BE32_MAX;
 
     if (!error) {
+        *recirc_depth_get() = 0;
 
         if (port->hw_port_id < MAX_HW_PORT_CNT) {
             int i, ii;
@@ -3290,7 +3289,7 @@ dp_netdev_process_rxq_port(struct dp_netdev_pmd_thread *pmd,
             }
 
             if (direct_batch.count) {
-                //VLOG_INFO("Tx directly from Port (odp) %i to %i, num %i, left %i\n", port_no, direct_odp_port, direct_batch.count, batch.count);
+//        VLOG_INFO("Tx directly from Port (odp) %i to %i, num %i, left %i\n", port_no, direct_odp_port, direct_batch.count, batch.count);
                 /* Check if SW flow statistics update in hw-offload is needed - only if hw cannot give flow stats */
                 netdev_update_flow_stats(rx, &direct_batch);
                 _send_pre_classified_batch(pmd, direct_odp_port, &direct_batch);
@@ -3301,8 +3300,6 @@ dp_netdev_process_rxq_port(struct dp_netdev_pmd_thread *pmd,
 
         batch_cnt = batch.count;
 
-        *recirc_depth_get() = 0;
-        cycles_count_start(pmd);
         dp_netdev_input(pmd, &batch, port_no);
     } else if (error != EAGAIN && error != EOPNOTSUPP) {
         static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
