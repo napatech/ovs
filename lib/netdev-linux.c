@@ -64,7 +64,7 @@
 #include "openflow/openflow.h"
 #include "ovs-atomic.h"
 #include "packets.h"
-#include "poll-loop.h"
+#include "openvswitch/poll-loop.h"
 #include "rtnetlink.h"
 #include "openvswitch/shash.h"
 #include "socket-util.h"
@@ -144,7 +144,7 @@ struct tpacket_auxdata {
  *
  * To avoid revisiting problems reported with using configure to detect
  * compatibility (see report at
- * http://openvswitch.org/pipermail/dev/2014-October/047978.html)
+ * https://mail.openvswitch.org/pipermail/ovs-dev/2014-October/291521.html)
  * unconditionally replace ethtool_cmd_speed. */
 #define ethtool_cmd_speed rpl_ethtool_cmd_speed
 static inline uint32_t rpl_ethtool_cmd_speed(const struct ethtool_cmd *ep)
@@ -182,8 +182,8 @@ static inline uint32_t rpl_ethtool_cmd_speed(const struct ethtool_cmd *ep)
  *
  * Tests for rtnl_link_stats64 don't seem to consistently work, e.g. on
  * 2.6.32-431.29.2.el6.x86_64 (see report at
- * http://openvswitch.org/pipermail/dev/2014-October/047978.html).  Maybe
- * if_link.h is not self-contained on those kernels.  It is easiest to
+ * https://mail.openvswitch.org/pipermail/ovs-dev/2014-October/291521.html).
+ * Maybe if_link.h is not self-contained on those kernels.  It is easiest to
  * unconditionally define a replacement. */
 #ifndef IFLA_STATS64
 #define IFLA_STATS64 23
@@ -1186,16 +1186,17 @@ static int
 netdev_linux_sock_batch_send(int sock, int ifindex,
                              struct dp_packet_batch *batch)
 {
+    const size_t size = dp_packet_batch_size(batch);
     /* We don't bother setting most fields in sockaddr_ll because the
      * kernel ignores them for SOCK_RAW. */
     struct sockaddr_ll sll = { .sll_family = AF_PACKET,
                                .sll_ifindex = ifindex };
 
-    struct mmsghdr *mmsg = xmalloc(sizeof(*mmsg) * batch->count);
-    struct iovec *iov = xmalloc(sizeof(*iov) * batch->count);
+    struct mmsghdr *mmsg = xmalloc(sizeof(*mmsg) * size);
+    struct iovec *iov = xmalloc(sizeof(*iov) * size);
 
-    for (int i = 0; i < batch->count; i++) {
-        struct dp_packet *packet = batch->packets[i];
+    struct dp_packet *packet;
+    DP_PACKET_BATCH_FOR_EACH (packet, batch) {
         iov[i].iov_base = dp_packet_data(packet);
         iov[i].iov_len = dp_packet_get_send_len(packet);
         mmsg[i].msg_hdr = (struct msghdr) { .msg_name = &sll,
@@ -1205,10 +1206,10 @@ netdev_linux_sock_batch_send(int sock, int ifindex,
     }
 
     int error = 0;
-    for (uint32_t ofs = 0; ofs < batch->count; ) {
+    for (uint32_t ofs = 0; ofs < size; ) {
         ssize_t retval;
         do {
-            retval = sendmmsg(sock, mmsg + ofs, batch->count - ofs, 0);
+            retval = sendmmsg(sock, mmsg + ofs, size - ofs, 0);
             error = retval < 0 ? errno : 0;
         } while (error == EINTR);
         if (error) {
@@ -1232,8 +1233,8 @@ netdev_linux_tap_batch_send(struct netdev *netdev_,
                             struct dp_packet_batch *batch)
 {
     struct netdev_linux *netdev = netdev_linux_cast(netdev_);
-    for (int i = 0; i < batch->count; i++) {
-        struct dp_packet *packet = batch->packets[i];
+    struct dp_packet *packet;
+    DP_PACKET_BATCH_FOR_EACH (packet, batch) {
         size_t size = dp_packet_get_send_len(packet);
         ssize_t retval;
         int error;
@@ -3762,6 +3763,7 @@ htb_parse_class_details__(struct netdev *netdev,
 {
     const struct htb *htb = htb_get__(netdev);
     int mtu, error;
+    unsigned long long int max_rate_bit;
 
     error = netdev_linux_get_mtu__(netdev_linux_cast(netdev), &mtu);
     if (error) {
@@ -3777,10 +3779,8 @@ htb_parse_class_details__(struct netdev *netdev,
     hc->min_rate = MIN(hc->min_rate, htb->max_rate);
 
     /* max-rate */
-    hc->max_rate = smap_get_ullong(details, "max-rate", 0) / 8;
-    if (!hc->max_rate) {
-        hc->max_rate = htb->max_rate;
-    }
+    max_rate_bit = smap_get_ullong(details, "max-rate", 0);
+    hc->max_rate = max_rate_bit ? max_rate_bit / 8 : htb->max_rate;
     hc->max_rate = MAX(hc->max_rate, hc->min_rate);
     hc->max_rate = MIN(hc->max_rate, htb->max_rate);
 
@@ -5438,8 +5438,12 @@ linux_get_ifindex(const char *netdev_name)
 
     error = af_inet_ioctl(SIOCGIFINDEX, &ifr);
     if (error) {
-        VLOG_WARN_RL(&rl, "ioctl(SIOCGIFINDEX) on %s device failed: %s",
-                     netdev_name, ovs_strerror(error));
+        /* ENODEV probably means that a vif disappeared asynchronously and
+         * hasn't been removed from the database yet, so reduce the log level
+         * to INFO for that case. */
+        VLOG_RL(&rl, error == ENODEV ? VLL_INFO : VLL_ERR,
+                "ioctl(SIOCGIFINDEX) on %s device failed: %s",
+                netdev_name, ovs_strerror(error));
         return -error;
     }
     return ifr.ifr_ifindex;

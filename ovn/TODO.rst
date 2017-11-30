@@ -33,7 +33,7 @@ OVN To-do List
 
   Latest discussion:
 
-  http://openvswitch.org/pipermail/dev/2016-August/078106.html
+  https://mail.openvswitch.org/pipermail/ovs-dev/2016-August/321649.html
 
 * Get incremental updates in ovn-controller and ovn-northd in some
   sensible way.
@@ -211,6 +211,15 @@ OVN To-do List
     Multicast_Group table entry in ovn-sb database into Mcast_Macs_Remote table
     configuration in VTEP database.
 
+  * OVN OCF pacemaker script to support Active / Passive HA for OVN dbs provides
+    the option to configure the inactivity_probe value. The default 5 seconds
+    inactivity_probe value is not sufficient and ovsdb-server drops the client
+    IDL connections for openstack deployments when the neutron server is heavily
+    loaded.
+
+    We need to find a proper solution to solve this issue instead of increasing
+    the inactivity_probe value.
+
 * Consider the use of BFD as tunnel monitor.
 
   The use of BFD for hypervisor-to-hypervisor tunnels is probably not worth it,
@@ -222,7 +231,7 @@ OVN To-do List
   likely needed as a part of that solution.
 
   There's more commentary in this ML post:
-  http://openvswitch.org/pipermail/dev/2015-November/062385.html
+  https://mail.openvswitch.org/pipermail/ovs-dev/2015-November/305928.html
 
 * ACL
 

@@ -16,6 +16,8 @@
 
 #include <config.h>
 
+#include "openvswitch/ofp-print.h"
+
 #include <errno.h>
 #include <inttypes.h>
 #include <sys/types.h>
@@ -43,7 +45,6 @@
 #include "openvswitch/ofp-actions.h"
 #include "openvswitch/ofp-errors.h"
 #include "openvswitch/ofp-msgs.h"
-#include "openvswitch/ofp-print.h"
 #include "openvswitch/ofp-util.h"
 #include "openvswitch/ofpbuf.h"
 #include "openvswitch/type-props.h"
@@ -3790,6 +3791,7 @@ ofp_to_string(const void *oh_, size_t len,
         error = ofpraw_decode(&raw, oh);
         if (!error) {
             ofp_to_string__(oh, port_map, raw, &string, verbosity);
+            ds_chomp(&string, ' ');
             if (verbosity >= 5) {
                 if (ds_last(&string) != '\n') {
                     ds_put_char(&string, '\n');

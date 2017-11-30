@@ -30,17 +30,9 @@ done
 ## start ##
 ## ----- ##
 
-# Keep track of removed vports so we can reload them if needed
-removed_vports=""
-
 insert_mods () {
     # Try loading openvswitch again.
     action "Inserting openvswitch module" modprobe openvswitch
-
-    for vport in $removed_vports; do
-        # Don't treat failures to load vports as fatal error
-        action "Inserting $vport module" modprobe $vport || true
-    done
 }
 
 insert_mod_if_required () {
@@ -75,6 +67,12 @@ ovs_vsctl () {
     ovs-vsctl --no-wait "$@"
 }
 
+set_hostname () {
+    # 'hostname -f' needs network connectivity to work.  So we should
+    # call this only after ovs-vswitchd is running.
+    ovs_vsctl set Open_vSwitch . external-ids:hostname="$(hostname -f)"
+}
+
 set_system_ids () {
     set ovs_vsctl set Open_vSwitch .
 
@@ -107,8 +105,6 @@ set_system_ids () {
             ;;
     esac
     set "$@" external-ids:system-id="\"$SYSTEM_ID\""
-
-    set "$@" external-ids:hostname="\"$(hostname -f)\""
 
     set "$@" external-ids:rundir="\"$rundir\""
 
@@ -254,6 +250,7 @@ start_forwarding () {
     if test X"$OVS_VSWITCHD" = Xyes; then
         do_start_forwarding || return 1
     fi
+    set_hostname &
     return 0
 }
 
@@ -393,9 +390,6 @@ force_reload_kmod () {
 
     for vport in `awk '/^vport_/ { print $1 }' /proc/modules`; do
         action "Removing $vport module" rmmod $vport
-        if ! grep -q $vport /proc/modules; then
-            removed_vports="$removed_vports $vport"
-        fi
     done
 
     if test -e /sys/module/openvswitch; then
@@ -553,16 +547,17 @@ This program is intended to be invoked internally by Open vSwitch startup
 scripts.  System administrators should not normally invoke it directly.
 
 Commands:
-  start              start Open vSwitch daemons
-  stop               stop Open vSwitch daemons
-  restart            stop and start Open vSwitch daemons
-  status             check whether Open vSwitch daemons are running
-  version            print versions of Open vSwitch daemons
-  load-kmod          insert modules if not already present
-  force-reload-kmod  save OVS network device state, stop OVS, unload kernel
-                     module, reload kernel module, start OVS, restore state
-  enable-protocol    enable protocol specified in options with iptables
-  help               display this help message
+  start                   start Open vSwitch daemons
+  stop                    stop Open vSwitch daemons
+  restart                 stop and start Open vSwitch daemons
+  status                  check whether Open vSwitch daemons are running
+  version                 print versions of Open vSwitch daemons
+  load-kmod               insert modules if not already present
+  force-reload-kmod       save OVS network device state, stop OVS, unload kernel
+                          module, reload kernel module, start OVS, restore state
+  enable-protocol         enable protocol specified in options with iptables
+  delete-transient-ports  delete transient (other_config:transient=true) ports
+  help                    display this help message
 
 One of the following options is required for "start", "restart" and "force-reload-kmod":
   --system-id=UUID   set specific ID to uniquely identify this system
@@ -724,6 +719,9 @@ case $command in
         ;;
     enable-protocol)
         enable_protocol
+        ;;
+    delete-transient-ports)
+        del_transient_ports
         ;;
     help)
         usage

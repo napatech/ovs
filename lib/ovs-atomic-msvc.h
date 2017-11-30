@@ -41,6 +41,13 @@ typedef enum {
     memory_order_seq_cst
 } memory_order;
 
+#if _MSC_VER > 1800 && defined(_M_IX86)
+/* From WDK 10 _InlineInterlocked* functions are renamed to
+ * _InlineInterlocked* although the documentation does not specify it */
+#define _InterlockedExchangeAdd64 _InlineInterlockedExchangeAdd64
+#define _InterlockedExchange64 _InlineInterlockedExchange64
+#endif
+
 #define ATOMIC_BOOL_LOCK_FREE 2
 #define ATOMIC_CHAR_LOCK_FREE 2
 #define ATOMIC_SHORT_LOCK_FREE 2
@@ -107,6 +114,7 @@ atomic_signal_fence(memory_order order)
  * InterlockedExchange64Acquire() available. So we are forced to use
  * InterlockedExchange64() which uses full memory barrier for everything
  * greater than 'memory_order_relaxed'. */
+#ifdef _M_IX86
 #define atomic_store64(DST, SRC, ORDER)                                    \
     if (ORDER == memory_order_relaxed) {                                   \
         InterlockedExchangeNoFence64((int64_t volatile *) (DST),           \
@@ -114,6 +122,11 @@ atomic_signal_fence(memory_order order)
     } else {                                                               \
         InterlockedExchange64((int64_t volatile *) (DST), (int64_t) (SRC));\
     }
+#elif _M_X64
+/* 64 bit writes are atomic on amd64 if 64 bit aligned. */
+#define atomic_store64(DST, SRC, ORDER)                                 \
+    atomic_storeX(64, DST, SRC, ORDER)
+#endif
 
 /* Used for 8 and 16 bit variations. */
 #define atomic_storeX(X, DST, SRC, ORDER)                               \
@@ -160,11 +173,17 @@ atomic_signal_fence(memory_order order)
 /* MSVC converts 64 bit reads into two instructions. So there is
  * a possibility that an interrupt can make a 64 bit read non-atomic even
  * when 8 byte aligned. So use fully memory barrier InterlockedOr64(). */
+#ifdef _M_IX86
 #define atomic_read64(SRC, DST, ORDER)                                     \
     __pragma (warning(push))                                               \
     __pragma (warning(disable:4047))                                       \
     *(DST) = InterlockedOr64((int64_t volatile *) (SRC), 0);               \
     __pragma (warning(pop))
+#elif _M_X64
+/* 64 bit reads are atomic on amd64 if 64 bit aligned. */
+#define atomic_read64(SRC, DST, ORDER)                                     \
+    *(DST) = *(SRC);
+#endif
 
 #define atomic_read(SRC, DST)                               \
         atomic_read_explicit(SRC, DST, memory_order_seq_cst)

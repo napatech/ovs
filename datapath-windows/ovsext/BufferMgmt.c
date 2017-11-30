@@ -1157,7 +1157,7 @@ FixFragmentHeader(PNET_BUFFER nb, UINT16 fragmentSize,
 
     mdl = NET_BUFFER_FIRST_MDL(nb);
 
-    bufferStart = (PUINT8)MmGetSystemAddressForMdlSafe(mdl, LowPagePriority);
+    bufferStart = (PUINT8)OvsGetMdlWithLowPriority(mdl);
     if (!bufferStart) {
         return NDIS_STATUS_RESOURCES;
     }
@@ -1215,7 +1215,7 @@ FixSegmentHeader(PNET_BUFFER nb, UINT16 segmentSize, UINT32 seqNumber,
 
     mdl = NET_BUFFER_FIRST_MDL(nb);
 
-    bufferStart = (PUINT8)MmGetSystemAddressForMdlSafe(mdl, LowPagePriority);
+    bufferStart = (PUINT8)OvsGetMdlWithLowPriority(mdl);
     if (!bufferStart) {
         return NDIS_STATUS_RESOURCES;
     }
@@ -1521,8 +1521,8 @@ OvsAllocateNBLFromBuffer(PVOID context,
 
     nb = NET_BUFFER_LIST_FIRST_NB(nbl);
     mdl = NET_BUFFER_CURRENT_MDL(nb);
-    data = (PUINT8)MmGetSystemAddressForMdlSafe(mdl, LowPagePriority) +
-                    NET_BUFFER_CURRENT_MDL_OFFSET(nb);
+    data = (PUINT8)OvsGetMdlWithLowPriority(mdl)
+        + NET_BUFFER_CURRENT_MDL_OFFSET(nb);
     if (!data) {
         OvsCompleteNBL(switchContext, nbl, TRUE);
         return NULL;
@@ -1605,7 +1605,7 @@ copymultiple_error:
  * --------------------------------------------------------------------------
  */
 PNET_BUFFER_LIST
-OvsCompleteNBL(POVS_SWITCH_CONTEXT context,
+OvsCompleteNBL(PVOID switch_ctx,
                PNET_BUFFER_LIST nbl,
                BOOLEAN updateRef)
 {
@@ -1615,6 +1615,7 @@ OvsCompleteNBL(POVS_SWITCH_CONTEXT context,
     NDIS_STATUS status;
     NDIS_HANDLE poolHandle;
     LONG value;
+    POVS_SWITCH_CONTEXT context = (POVS_SWITCH_CONTEXT)switch_ctx;
     POVS_NBL_POOL ovsPool = &context->ovsPool;
     PNET_BUFFER nb;
 
@@ -1782,4 +1783,51 @@ OvsGetCtxSourcePortNo(PNET_BUFFER_LIST nbl,
     }
     *portNo = ctx->srcPortNo;
     return NDIS_STATUS_SUCCESS;
+}
+
+/*
+ * --------------------------------------------------------------------------
+ * OvsCreateNewNBLsFromMultipleNBs --
+ *      Creates an NBL chain where each NBL has a single NB,
+ *      from an NBL which has multiple NBs.
+ *      Sets 'curNbl' and 'lastNbl' to the first and last NBL in the
+ *      newly created NBL chain respectively, and completes the original NBL.
+ * --------------------------------------------------------------------------
+ */
+NTSTATUS
+OvsCreateNewNBLsFromMultipleNBs(POVS_SWITCH_CONTEXT switchContext,
+                                PNET_BUFFER_LIST *curNbl,
+                                PNET_BUFFER_LIST *lastNbl)
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    PNET_BUFFER_LIST newNbls = NULL;
+    PNET_BUFFER_LIST nbl = NULL;
+    BOOLEAN error = TRUE;
+
+    do {
+        /* Create new NBLs from curNbl with multiple net buffers. */
+        newNbls = OvsPartialCopyToMultipleNBLs(switchContext,
+                                               *curNbl, 0, 0, TRUE);
+        if (NULL == newNbls) {
+            OVS_LOG_ERROR("Failed to allocate NBLs with single NB.");
+            status = NDIS_STATUS_RESOURCES;
+            break;
+        }
+
+        nbl = newNbls;
+        while (nbl) {
+            *lastNbl = nbl;
+            nbl = NET_BUFFER_LIST_NEXT_NBL(nbl);
+        }
+
+        (*curNbl)->Next = NULL;
+
+        OvsCompleteNBL(switchContext, *curNbl, TRUE);
+
+        *curNbl = newNbls;
+
+        error = FALSE;
+    } while (error);
+
+    return status;
 }

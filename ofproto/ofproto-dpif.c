@@ -62,7 +62,7 @@
 #include "ovs-lldp.h"
 #include "ovs-rcu.h"
 #include "ovs-router.h"
-#include "poll-loop.h"
+#include "openvswitch/poll-loop.h"
 #include "seq.h"
 #include "simap.h"
 #include "smap.h"
@@ -92,7 +92,7 @@ struct ofbundle {
     char *name;                 /* Identifier for log messages. */
 
     /* Configuration. */
-    struct ovs_list ports;      /* Contains "struct ofport"s. */
+    struct ovs_list ports;      /* Contains "struct ofport_dpif"s. */
     enum port_vlan_mode vlan_mode; /* VLAN mode */
     uint16_t qinq_ethtype;
     int vlan;                   /* -1=trunk port, else a 12-bit VLAN ID. */
@@ -378,6 +378,7 @@ type_run(const char *type)
             HMAP_FOR_EACH (iter, up.hmap_node, &ofproto->up.ports) {
                 char namebuf[NETDEV_VPORT_NAME_BUFSIZE];
                 const char *dp_port;
+                odp_port_t old_odp_port;
 
                 if (!iter->is_tunnel) {
                     continue;
@@ -385,6 +386,7 @@ type_run(const char *type)
 
                 dp_port = netdev_vport_get_dpif_port(iter->up.netdev,
                                                      namebuf, sizeof namebuf);
+                old_odp_port = iter->odp_port;
                 node = simap_find(&tmp_backers, dp_port);
                 if (node) {
                     simap_put(&backer->tnl_backers, dp_port, node->data);
@@ -406,7 +408,7 @@ type_run(const char *type)
 
                 iter->odp_port = node ? u32_to_odp(node->data) : ODPP_NONE;
                 if (tnl_port_reconfigure(iter, iter->up.netdev,
-                                         iter->odp_port,
+                                         iter->odp_port, old_odp_port,
                                          ovs_native_tunneling_is_on(ofproto), dp_port)) {
                     backer->need_revalidate = REV_RECONFIGURE;
                 }
@@ -414,7 +416,7 @@ type_run(const char *type)
         }
 
         SIMAP_FOR_EACH (node, &tmp_backers) {
-            dpif_port_del(backer->dpif, u32_to_odp(node->data));
+            dpif_port_del(backer->dpif, u32_to_odp(node->data), false);
         }
         simap_destroy(&tmp_backers);
 
@@ -571,7 +573,7 @@ process_dpif_port_change(struct dpif_backer *backer, const char *devname)
     } else if (!ofproto) {
         /* The port was added, but we don't know with which
          * ofproto we should associate it.  Delete it. */
-        dpif_port_del(backer->dpif, port.port_no);
+        dpif_port_del(backer->dpif, port.port_no, false);
     } else {
         struct ofport_dpif *ofport;
 
@@ -762,7 +764,7 @@ open_dpif_backer(const char *type, struct dpif_backer **backerp)
     dpif_port_dump_done(&port_dump);
 
     LIST_FOR_EACH_POP (garbage, list_node, &garbage_list) {
-        dpif_port_del(backer->dpif, garbage->odp_port);
+        dpif_port_del(backer->dpif, garbage->odp_port, false);
         free(garbage);
     }
 
@@ -1921,7 +1923,13 @@ port_destruct(struct ofport *port_, bool del)
          * assumes that removal of attached ports will happen as part of
          * destruction. */
         if (!port->is_tunnel) {
-            dpif_port_del(ofproto->backer->dpif, port->odp_port);
+            dpif_port_del(ofproto->backer->dpif, port->odp_port, false);
+        }
+    } else if (del) {
+        /* The underlying device is already deleted (e.g. tunctl -d).
+         * Calling dpif_port_remove to do local cleanup for the netdev */
+        if (!port->is_tunnel) {
+            dpif_port_del(ofproto->backer->dpif, port->odp_port, true);
         }
     }
 
@@ -1944,7 +1952,7 @@ port_destruct(struct ofport *port_, bool del)
        dpif_ipfix_del_tunnel_port(ofproto->ipfix, port->odp_port);
     }
 
-    tnl_port_del(port);
+    tnl_port_del(port, port->odp_port);
     sset_find_and_delete(&ofproto->ports, devname);
     sset_find_and_delete(&ofproto->ghost_ports, devname);
     bundle_remove(port_);
@@ -2000,7 +2008,7 @@ port_modified(struct ofport *port_)
     if (port->is_tunnel) {
         struct ofproto_dpif *ofproto = ofproto_dpif_cast(port->up.ofproto);
 
-        if (tnl_port_reconfigure(port, netdev, port->odp_port,
+        if (tnl_port_reconfigure(port, netdev, port->odp_port, port->odp_port,
                                  ovs_native_tunneling_is_on(ofproto),
                                  dp_port_name)) {
             ofproto->backer->need_revalidate = REV_RECONFIGURE;
@@ -3011,15 +3019,16 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     size_t i;
     bool ok;
 
+    bundle = bundle_lookup(ofproto, aux);
+
     if (!s) {
-        bundle_destroy(bundle_lookup(ofproto, aux));
+        bundle_destroy(bundle);
         return 0;
     }
 
     ovs_assert(s->n_slaves == 1 || s->bond != NULL);
     ovs_assert((s->lacp != NULL) == (s->lacp_slaves != NULL));
 
-    bundle = bundle_lookup(ofproto, aux);
     if (!bundle) {
         bundle = xmalloc(sizeof *bundle);
 
@@ -3697,7 +3706,7 @@ port_del(struct ofproto *ofproto_, ofp_port_t ofp_port)
                          netdev_get_name(ofport->up.netdev));
     ofproto->backer->need_revalidate = REV_RECONFIGURE;
     if (!ofport->is_tunnel && !netdev_vport_is_patch(ofport->up.netdev)) {
-        error = dpif_port_del(ofproto->backer->dpif, ofport->odp_port);
+        error = dpif_port_del(ofproto->backer->dpif, ofport->odp_port, false);
         if (!error) {
             /* The caller is going to close ofport->up.netdev.  If this is a
              * bonded port, then the bond is using that netdev, so remove it
@@ -5695,6 +5704,8 @@ meter_set(struct ofproto *ofproto_, ofproto_meter_id *meter_id,
         return OFPERR_OFPMMFC_OUT_OF_BANDS;
     case ENODEV: /* Unsupported band type */
         return OFPERR_OFPMMFC_BAD_BAND;
+    case EDOM: /* Rate must be non-zero */
+        return OFPERR_OFPMMFC_BAD_RATE;
     default:
         return OFPERR_OFPMMFC_UNKNOWN;
     }

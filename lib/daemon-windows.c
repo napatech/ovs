@@ -24,7 +24,7 @@
 #include "dirs.h"
 #include "fatal-signal.h"
 #include "ovs-thread.h"
-#include "poll-loop.h"
+#include "openvswitch/poll-loop.h"
 #include "openvswitch/vlog.h"
 
 VLOG_DEFINE_THIS_MODULE(daemon_windows);
@@ -137,6 +137,12 @@ service_start(int *argcp, char **argvp[])
          * time. */
         *argcp = sargc;
         *argvp = *sargvp;
+
+        /* Enable default error mode so we can take advantage of WER
+         * (Windows Error Reporting) crash dumps.
+         * Being a service it does not allow for WER window pop-up.
+         * XXX implement our on crash dump collection mechanism. */
+        SetErrorMode(0);
 
         return;
     }

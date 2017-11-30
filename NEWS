@@ -1,5 +1,20 @@
-Post-v2.7.0
----------------------
+Post-v2.8.0
+--------------------
+   - NSH implementation now conforms to latest draft (draft-ietf-sfc-nsh-28).
+   - OVN:
+     * The "requested-chassis" option for a logical switch port now accepts a
+       chassis "hostname" in addition to a chassis "name".
+     * IPv6
+       - Added support to send IPv6 Router Advertisement packets in response to
+         the IPv6 Router Solicitation packets from  the VIF ports.
+       - Added support to generate Neighbor Solicitation packets using the OVN
+         action 'nd_ns' to resolve unknown next hop MAC addresses for the
+         IPv6 packets.
+   - Linux kernel 4.13
+     * Add support for compiling OVS with the latest Linux 4.13 kernel
+
+v2.8.0 - 31 Aug 2017
+--------------------
    - ovs-ofctl:
      * ovs-ofctl can now accept and display port names in place of numbers.  By
        default it always accepts names and in interactive use it displays them;
@@ -32,6 +47,8 @@ Post-v2.7.0
      abbreviated to 4 hex digits.
    - Userspace Datapath:
      * Added NAT support for userspace datapath.
+     * Added FTP and TFTP support with NAT for userspace datapath.
+     * Experimental NSH (Network Service Header) support in userspace datapath.
    - OVN:
      * New built-in DNS support.
      * IPAM for IPv4 can now exclude user-defined addresses from assignment.
@@ -68,8 +85,17 @@ Post-v2.7.0
        pipeline (PTAP).
      * Added generic encap and decap actions (EXT-382).
        First supported use case is encap/decap for Ethernet.
+     * Added NSH (Network Service Header) support in userspace
+       Used generic encap and decap actions to implement encapsulation and
+       decapsulation of NSH header.
+       IETF NSH draft - https://datatracker.ietf.org/doc/draft-ietf-sfc-nsh/
+     * Conntrack state is only available to the processing path that
+       follows the "recirc_table" argument of the ct() action.  Starting
+       in OVS 2.8, this state is now cleared for the current processing
+       path whenever ct() is called.
    - Fedora Packaging:
      * OVN services are no longer restarted automatically after upgrade.
+     * ovs-vswitchd and ovsdb-server run as non-root users by default.
    - Add --cleanup option to command 'ovs-appctl exit' (see ovs-vswitchd(8)).
    - L3 tunneling:
      * Use new tunnel port option "packet_type" to configure L2 vs. L3.

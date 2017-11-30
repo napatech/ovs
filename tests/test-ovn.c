@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <getopt.h>
 #include <sys/wait.h>
+
 #include "command-line.h"
 #include "dp-packet.h"
 #include "fatal-signal.h"
@@ -31,7 +32,7 @@
 #include "ovn/expr.h"
 #include "ovn/lex.h"
 #include "ovn/lib/logical-fields.h"
-#include "ovn/lib/ovn-dhcp.h"
+#include "ovn/lib/ovn-l7.h"
 #include "ovs-thread.h"
 #include "ovstest.h"
 #include "openvswitch/shash.h"
@@ -154,7 +155,8 @@ create_symtab(struct shash *symtab)
 }
 
 static void
-create_dhcp_opts(struct hmap *dhcp_opts, struct hmap *dhcpv6_opts)
+create_gen_opts(struct hmap *dhcp_opts, struct hmap *dhcpv6_opts,
+                struct hmap *nd_ra_opts)
 {
     hmap_init(dhcp_opts);
     dhcp_opt_add(dhcp_opts, "offerip", 0, "ipv4");
@@ -186,6 +188,10 @@ create_dhcp_opts(struct hmap *dhcp_opts, struct hmap *dhcpv6_opts)
     dhcp_opt_add(dhcpv6_opts, "ia_addr",  5, "ipv6");
     dhcp_opt_add(dhcpv6_opts, "dns_server",  23, "ipv6");
     dhcp_opt_add(dhcpv6_opts, "domain_search",  24, "str");
+
+    /* IPv6 ND RA options. */
+    hmap_init(nd_ra_opts);
+    nd_ra_opts_init(nd_ra_opts);
 }
 
 static void
@@ -202,10 +208,12 @@ create_addr_sets(struct shash *addr_sets)
     static const char *const addrs3[] = {
         "00:00:00:00:00:01", "00:00:00:00:00:02", "00:00:00:00:00:03",
     };
+    static const char *const addrs4[] = { NULL };
 
     expr_addr_sets_add(addr_sets, "set1", addrs1, 3);
     expr_addr_sets_add(addr_sets, "set2", addrs2, 3);
     expr_addr_sets_add(addr_sets, "set3", addrs3, 3);
+    expr_addr_sets_add(addr_sets, "set4", addrs4, 0);
 }
 
 static bool
@@ -1190,12 +1198,13 @@ test_parse_actions(struct ovs_cmdl_context *ctx OVS_UNUSED)
     struct shash symtab;
     struct hmap dhcp_opts;
     struct hmap dhcpv6_opts;
+    struct hmap nd_ra_opts;
     struct simap ports;
     struct ds input;
     bool ok = true;
 
     create_symtab(&symtab);
-    create_dhcp_opts(&dhcp_opts, &dhcpv6_opts);
+    create_gen_opts(&dhcp_opts, &dhcpv6_opts, &nd_ra_opts);
 
     /* Initialize group ids. */
     struct group_table group_table;
@@ -1223,6 +1232,7 @@ test_parse_actions(struct ovs_cmdl_context *ctx OVS_UNUSED)
             .symtab = &symtab,
             .dhcp_opts = &dhcp_opts,
             .dhcpv6_opts = &dhcpv6_opts,
+            .nd_ra_opts = &nd_ra_opts,
             .n_tables = 24,
             .cur_ltable = 10,
         };
@@ -1307,7 +1317,7 @@ test_parse_actions(struct ovs_cmdl_context *ctx OVS_UNUSED)
     shash_destroy(&symtab);
     dhcp_opts_destroy(&dhcp_opts);
     dhcp_opts_destroy(&dhcpv6_opts);
-
+    nd_ra_opts_destroy(&nd_ra_opts);
     exit(ok ? EXIT_SUCCESS : EXIT_FAILURE);
 }
 

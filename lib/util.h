@@ -31,7 +31,7 @@
 extern char *program_name;
 
 #define __ARRAY_SIZE_NOCHECK(ARRAY) (sizeof(ARRAY) / sizeof((ARRAY)[0]))
-#ifdef __GNUC__
+#if __GNUC__ && !defined(__cplusplus)
 /* return 0 for array types, 1 otherwise */
 #define __ARRAY_CHECK(ARRAY) 					\
     !__builtin_types_compatible_p(typeof(ARRAY), typeof(&ARRAY[0]))
@@ -41,6 +41,19 @@ extern char *program_name;
 #define __ARRAY_SIZE(ARRAY)					\
     __builtin_choose_expr(__ARRAY_CHECK(ARRAY),			\
         __ARRAY_SIZE_NOCHECK(ARRAY), __ARRAY_FAIL(ARRAY))
+#elif defined(__cplusplus)
+#define __ARRAY_SIZE(ARRAY) ( \
+   0 * sizeof(reinterpret_cast<const ::Bad_arg_to_ARRAY_SIZE *>(ARRAY)) + \
+   0 * sizeof(::Bad_arg_to_ARRAY_SIZE::check_type((ARRAY), &(ARRAY))) + \
+   sizeof(ARRAY) / sizeof((ARRAY)[0]) )
+
+struct Bad_arg_to_ARRAY_SIZE {
+   class Is_pointer;
+   class Is_array {};
+   template <typename T>
+   static Is_pointer check_type(const T *, const T * const *);
+   static Is_array check_type(const void *, const void *);
+};
 #else
 #define __ARRAY_SIZE(ARRAY) __ARRAY_SIZE_NOCHECK(ARRAY)
 #endif
@@ -192,6 +205,7 @@ bool str_to_long(const char *, int base, long *);
 bool str_to_llong(const char *, int base, long long *);
 bool str_to_llong_with_tail(const char *, char **, int base, long long *);
 bool str_to_uint(const char *, int base, unsigned int *);
+bool str_to_ullong(const char *, int base, unsigned long long *);
 bool str_to_llong_range(const char *, int base, long long *, long long *);
 
 bool ovs_scan(const char *s, const char *format, ...) OVS_SCANF_FORMAT(2, 3);
@@ -489,6 +503,7 @@ ovs_u128_and(const ovs_u128 a, const ovs_u128 b)
 }
 
 void xsleep(unsigned int seconds);
+void xnanosleep(uint64_t nanoseconds);
 
 bool is_stdout_a_tty(void);
 

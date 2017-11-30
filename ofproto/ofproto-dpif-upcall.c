@@ -36,7 +36,7 @@
 #include "ofproto-dpif-xlate-cache.h"
 #include "ovs-rcu.h"
 #include "packets.h"
-#include "poll-loop.h"
+#include "openvswitch/poll-loop.h"
 #include "seq.h"
 #include "unixctl.h"
 #include "openvswitch/vlog.h"
@@ -1649,13 +1649,13 @@ ukey_create_from_dpif_flow(const struct udpif *udpif,
      * relies on OVS userspace internal state, we need to delete all old
      * datapath flows with either a non-zero recirc_id in the key, or any
      * recirculation actions upon OVS restart. */
-    NL_ATTR_FOR_EACH_UNSAFE (a, left, flow->key, flow->key_len) {
+    NL_ATTR_FOR_EACH (a, left, flow->key, flow->key_len) {
         if (nl_attr_type(a) == OVS_KEY_ATTR_RECIRC_ID
             && nl_attr_get_u32(a) != 0) {
             return EINVAL;
         }
     }
-    NL_ATTR_FOR_EACH_UNSAFE (a, left, flow->actions, flow->actions_len) {
+    NL_ATTR_FOR_EACH (a, left, flow->actions, flow->actions_len) {
         if (nl_attr_type(a) == OVS_ACTION_ATTR_RECIRC) {
             return EINVAL;
         }
@@ -2047,8 +2047,8 @@ revalidate_ukey__(struct udpif *udpif, const struct udpif_key *ukey,
     if (xoutp->slow) {
         struct ofproto_dpif *ofproto;
         ofproto = xlate_lookup_ofproto(udpif->backer, &ctx.flow, NULL);
-        uint32_t smid = ofproto->up.slowpath_meter_id;
-        uint32_t cmid = ofproto->up.controller_meter_id;
+        uint32_t smid = ofproto ? ofproto->up.slowpath_meter_id : UINT32_MAX;
+        uint32_t cmid = ofproto ? ofproto->up.controller_meter_id : UINT32_MAX;
 
         ofpbuf_clear(odp_actions);
         compose_slow_path(udpif, xoutp, &ctx.flow, ctx.flow.in_port.odp_port,
@@ -2227,6 +2227,11 @@ push_dp_ops(struct udpif *udpif, struct ukey_op *ops, size_t n_ops)
 
         if (op->dop.error) {
             /* flow_del error, 'stats' is unusable. */
+            if (op->ukey) {
+                ovs_mutex_lock(&op->ukey->mutex);
+                transition_ukey(op->ukey, UKEY_EVICTED);
+                ovs_mutex_unlock(&op->ukey->mutex);
+            }
             continue;
         }
 

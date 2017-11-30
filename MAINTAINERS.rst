@@ -34,7 +34,7 @@ The responsibilities of an Open vSwitch committer are documented
 The process for adding or removing committers is documented
 `here <Documentation/internals/committer-grant-revocation.rst>`__.
 
-This is the current list of Open vSwitch committers:
+This is the current list of active Open vSwitch committers:
 
 .. list-table:: OVS Maintainers
    :header-rows: 1
@@ -43,6 +43,8 @@ This is the current list of Open vSwitch committers:
      - Email
    * - Alex Wang
      - ee07b291@gmail.com
+   * - Alin Serdean
+     - aserdean@cloudbasesolutions.com
    * - Andy Zhou
      - azhou@ovn.org
    * - Ansis Atteka
@@ -73,3 +75,15 @@ This is the current list of Open vSwitch committers:
      - tgraf@noironetworks.com
    * - YAMAMOTO Takashi
      - yamamoto@midokura.com
+
+The project also maintains a list of Emeritus Committers (or Maintainers).
+More information about Emeritus Committers can be found
+`here <Documentation/internals/committer-emeritus-status.rst>`__.
+
+.. list-table:: OVS Emeritus Maintainers
+   :header-rows: 1
+
+   * - Name
+     - Email
+   * -
+     -

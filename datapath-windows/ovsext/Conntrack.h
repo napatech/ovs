@@ -41,14 +41,16 @@ struct ct_addr {
 struct ct_endpoint {
     struct ct_addr addr;
     union {
-        ovs_be16 port;
+        struct {
+            ovs_be16 port;
+            uint16 pad_port;
+        };
         struct {
             ovs_be16 icmp_id;
             uint8_t icmp_type;
             uint8_t icmp_code;
         };
     };
-    UINT16 pad;
 };
 
 typedef enum CT_UPDATE_RES {
@@ -129,6 +131,7 @@ typedef struct OvsConntrackKeyLookupCtx {
     BOOLEAN         related;
 } OvsConntrackKeyLookupCtx;
 
+#define CT_MAX_ENTRIES 1 << 21
 #define CT_HASH_TABLE_SIZE ((UINT32)1 << 10)
 #define CT_HASH_TABLE_MASK (CT_HASH_TABLE_SIZE - 1)
 #define CT_INTERVAL_SEC 10000000LL //1s
@@ -154,20 +157,17 @@ static __inline UINT32
 OvsGetTcpPayloadLength(PNET_BUFFER_LIST nbl)
 {
     IPHdr *ipHdr;
-    char *ipBuf[sizeof(IPHdr)];
-    PNET_BUFFER curNb;
-    curNb = NET_BUFFER_LIST_FIRST_NB(nbl);
-    UINT32 hdrLen = sizeof(EthHdr);
-    NdisAdvanceNetBufferDataStart(curNb, hdrLen, FALSE, NULL);
-    ipHdr = NdisGetDataBuffer(curNb, sizeof *ipHdr, (PVOID) &ipBuf,
-                              1 /*no align*/, 0);
+    TCPHdr *tcp;
+    char *ipBuf[sizeof(EthHdr) + sizeof(IPHdr) + sizeof(TCPHdr)];
+
+    ipHdr = NdisGetDataBuffer(NET_BUFFER_LIST_FIRST_NB(nbl), sizeof *ipBuf,
+                              (PVOID)&ipBuf, 1 /*no align*/, 0);
     if (ipHdr == NULL) {
-        NdisRetreatNetBufferDataStart(curNb, hdrLen, 0, NULL);
         return 0;
     }
 
-    TCPHdr *tcp = (TCPHdr *)((PCHAR)ipHdr + ipHdr->ihl * 4);
-    NdisRetreatNetBufferDataStart(curNb, hdrLen, 0, NULL);
+    ipHdr = (IPHdr *)((PCHAR)ipHdr + sizeof(EthHdr));
+    tcp = (TCPHdr *)((PCHAR)ipHdr + ipHdr->ihl * 4);
 
     return (ntohs(ipHdr->tot_len) - (ipHdr->ihl * 4) - (TCP_HDR_LEN(tcp)));
 }

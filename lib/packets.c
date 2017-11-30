@@ -22,6 +22,8 @@
 #include <netinet/ip6.h>
 #include <netinet/icmp6.h>
 #include <stdlib.h>
+#include <sys/types.h>
+#include <netdb.h>
 #include "byte-order.h"
 #include "csum.h"
 #include "crc32c.h"
@@ -402,6 +404,90 @@ pop_mpls(struct dp_packet *packet, ovs_be16 ethtype)
     }
 }
 
+void
+encap_nsh(struct dp_packet *packet, const struct ovs_action_encap_nsh *encap)
+{
+    struct nsh_hdr *nsh;
+    size_t length = NSH_BASE_HDR_LEN + encap->mdlen;
+    uint8_t next_proto;
+
+    switch (ntohl(packet->packet_type)) {
+        case PT_ETH:
+            next_proto = NSH_P_ETHERNET;
+            break;
+        case PT_IPV4:
+            next_proto = NSH_P_IPV4;
+            break;
+        case PT_IPV6:
+            next_proto = NSH_P_IPV6;
+            break;
+        case PT_NSH:
+            next_proto = NSH_P_NSH;
+            break;
+        default:
+            OVS_NOT_REACHED();
+    }
+
+    nsh = (struct nsh_hdr *) dp_packet_push_uninit(packet, length);
+    nsh->ver_flags_ttl_len =
+            htons(((encap->flags << NSH_FLAGS_SHIFT) & NSH_FLAGS_MASK)
+                    | (63 << NSH_TTL_SHIFT)
+                    | ((length >> 2) << NSH_LEN_SHIFT));
+    nsh->md_type = (encap->mdtype << NSH_MDTYPE_SHIFT) & NSH_MDTYPE_MASK;
+    nsh->next_proto = next_proto;
+    put_16aligned_be32(&nsh->path_hdr, encap->path_hdr);
+    switch (encap->mdtype) {
+        case NSH_M_TYPE1:
+            nsh->md1 = *ALIGNED_CAST(struct nsh_md1_ctx *, encap->metadata);
+            break;
+        case NSH_M_TYPE2: {
+            /* The MD2 metadata in encap is already padded to 4 bytes. */
+            memcpy(&nsh->md2, encap->metadata, encap->mdlen);
+            break;
+        }
+        default:
+            OVS_NOT_REACHED();
+    }
+
+    packet->packet_type = htonl(PT_NSH);
+    dp_packet_reset_offsets(packet);
+    packet->l3_ofs = 0;
+}
+
+bool
+decap_nsh(struct dp_packet *packet)
+{
+    struct nsh_hdr *nsh = (struct nsh_hdr *) dp_packet_l3(packet);
+    size_t length;
+    uint32_t next_pt;
+
+    if (packet->packet_type == htonl(PT_NSH) && nsh) {
+        switch (nsh->next_proto) {
+            case NSH_P_ETHERNET:
+                next_pt = PT_ETH;
+                break;
+            case NSH_P_IPV4:
+                next_pt = PT_IPV4;
+                break;
+            case NSH_P_IPV6:
+                next_pt = PT_IPV6;
+                break;
+            case NSH_P_NSH:
+                next_pt = PT_NSH;
+                break;
+            default:
+                /* Unknown inner packet type. Drop packet. */
+                return false;
+        }
+
+        length = nsh_hdr_len(nsh);
+        dp_packet_reset_packet(packet, length);
+        packet->packet_type = htonl(next_pt);
+        /* Packet must be recirculated for further processing. */
+    }
+    return true;
+}
+
 /* Converts hex digits in 'hex' to an Ethernet packet in '*packetp'.  The
  * caller must free '*packetp'.  On success, returns NULL.  On failure, returns
  * an error message and stores NULL in '*packetp'.
@@ -571,6 +657,82 @@ ip_parse_cidr(const char *s, ovs_be32 *ip, unsigned int *plen)
     if (!error && s[n]) {
         return xasprintf("%s: invalid IP address", s);
     }
+    return error;
+}
+
+/* Parses the string into an IPv4 or IPv6 address.
+ * The port flags act as follows:
+ * * PORT_OPTIONAL: A port may be present but is not required
+ * * PORT_REQUIRED: A port must be present
+ * * PORT_FORBIDDEN: A port must not be present
+ */
+char * OVS_WARN_UNUSED_RESULT
+ipv46_parse(const char *s, enum port_flags flags, struct sockaddr_storage *ss)
+{
+    char *error = NULL;
+
+    char *copy;
+    copy = xstrdup(s);
+
+    char *addr;
+    char *port;
+    if (*copy == '[') {
+        char *end;
+
+        addr = copy + 1;
+        end = strchr(addr, ']');
+        if (!end) {
+            error = xasprintf("No closing bracket on address %s", s);
+            goto finish;
+        }
+        *end++ = '\0';
+        if (*end == ':') {
+            port = end + 1;
+        } else {
+            port = NULL;
+        }
+    } else {
+        addr = copy;
+        port = strchr(copy, ':');
+        if (port) {
+            if (strchr(port + 1, ':')) {
+                port = NULL;
+            } else {
+                *port++ = '\0';
+            }
+        }
+    }
+
+    if (port && !*port) {
+        error = xasprintf("Port is an empty string");
+        goto finish;
+    }
+
+    if (port && flags == PORT_FORBIDDEN) {
+        error = xasprintf("Port forbidden in address %s", s);
+        goto finish;
+    } else if (!port && flags == PORT_REQUIRED) {
+        error = xasprintf("Port required in address %s", s);
+        goto finish;
+    }
+
+    struct addrinfo hints = {
+        .ai_flags = AI_NUMERICHOST | AI_NUMERICSERV,
+        .ai_family = AF_UNSPEC,
+    };
+    struct addrinfo *res;
+    int status;
+    status = getaddrinfo(addr, port, &hints, &res);
+    if (status) {
+        error = xasprintf("Error parsing address %s: %s",
+                s, gai_strerror(status));
+        goto finish;
+    }
+    memcpy(ss, res->ai_addr, res->ai_addrlen);
+    freeaddrinfo(res);
+
+finish:
+    free(copy);
     return error;
 }
 

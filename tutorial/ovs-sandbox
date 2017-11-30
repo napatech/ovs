@@ -314,7 +314,7 @@ OVS_SYSCONFDIR=$sandbox; export OVS_SYSCONFDIR
 
 if $built; then
     # Easy access to OVS manpages.
-    (cd "$builddir" && ${MAKE-make} install-man mandir="$sandbox"/man)
+    (cd "$builddir" && ${MAKE-make} install-man install-man-rst mandir="$sandbox"/man)
     MANPATH=$sandbox/man:; export MANPATH
 fi
 
@@ -385,7 +385,7 @@ sleep 0.1
 
 #Wait for ovsdb-server to finish launching.
 if test ! -e "$sandbox"/db.sock; then
-    echo -n "Waiting for ovsdb-server to start..."
+    printf "Waiting for ovsdb-server to start..."
     while test ! -e "$sandbox"/db.sock; do
         sleep 1;
     done

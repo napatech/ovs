@@ -147,7 +147,7 @@ void odp_portno_name_format(const struct hmap *portno_names,
  * add another field and forget to adjust this value.
  */
 #define ODPUTIL_FLOW_KEY_BYTES 640
-BUILD_ASSERT_DECL(FLOW_WC_SEQ == 39);
+BUILD_ASSERT_DECL(FLOW_WC_SEQ == 40);
 
 /* A buffer with sufficient size and alignment to hold an nlattr-formatted flow
  * key.  An array of "struct nlattr" might not, in theory, be sufficiently
@@ -277,7 +277,8 @@ enum slow_path_reason commit_odp_actions(const struct flow *,
                                          struct ofpbuf *odp_actions,
                                          struct flow_wildcards *wc,
                                          bool use_masked,
-                                         bool pending_encap);
+                                         bool pending_encap,
+                                         struct ofpbuf *encap_data);
 
 /* ofproto-dpif interface.
  *
@@ -343,4 +344,15 @@ void odp_put_push_eth_action(struct ofpbuf *odp_actions,
                              const struct eth_addr *eth_src,
                              const struct eth_addr *eth_dst);
 
+struct attr_len_tbl {
+    int len;
+    const struct attr_len_tbl *next;
+    int next_max;
+};
+
+#define ATTR_LEN_INVALID  -1
+#define ATTR_LEN_VARIABLE -2
+#define ATTR_LEN_NESTED   -3
+
+extern const struct attr_len_tbl ovs_flow_key_attr_lens[OVS_KEY_ATTR_MAX + 1];
 #endif /* odp-util.h */
