@@ -74,6 +74,8 @@ EXTRA_DIST = \
 	CONTRIBUTING.rst \
 	MAINTAINERS.rst \
 	README.rst \
+	rte_flow.png \
+	rte_flow_acceleration.rst \
 	NOTICE \
 	.travis.yml \
 	.travis/linux-build.sh \
