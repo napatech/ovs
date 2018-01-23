@@ -1260,16 +1260,28 @@ format_ct_label_masked(struct ds *s, const ovs_u128 *key, const ovs_u128 *mask)
 static void
 format_nsh_masked(struct ds *s, const struct flow *f, const struct flow *m)
 {
+    ovs_be32 spi_mask = nsh_path_hdr_to_spi(m->nsh.path_hdr);
+    if (spi_mask == htonl(NSH_SPI_MASK >> NSH_SPI_SHIFT)) {
+        spi_mask = OVS_BE32_MAX;
+    }
     format_uint8_masked(s, "nsh_flags", f->nsh.flags, m->nsh.flags);
+    format_uint8_masked(s, "nsh_ttl", f->nsh.ttl, m->nsh.ttl);
     format_uint8_masked(s, "nsh_mdtype", f->nsh.mdtype, m->nsh.mdtype);
     format_uint8_masked(s, "nsh_np", f->nsh.np, m->nsh.np);
-    format_be32_masked_hex(s, "nsh_spi", f->nsh.spi, m->nsh.spi);
-    format_uint8_masked(s, "nsh_si", f->nsh.si, m->nsh.si);
+
+    format_be32_masked_hex(s, "nsh_spi", nsh_path_hdr_to_spi(f->nsh.path_hdr),
+                           spi_mask);
+    format_uint8_masked(s, "nsh_si", nsh_path_hdr_to_si(f->nsh.path_hdr),
+                        nsh_path_hdr_to_si(m->nsh.path_hdr));
     if (m->nsh.mdtype == UINT8_MAX && f->nsh.mdtype == NSH_M_TYPE1) {
-        format_be32_masked_hex(s, "nsh_c1", f->nsh.c[0], m->nsh.c[0]);
-        format_be32_masked_hex(s, "nsh_c2", f->nsh.c[1], m->nsh.c[1]);
-        format_be32_masked_hex(s, "nsh_c3", f->nsh.c[2], m->nsh.c[2]);
-        format_be32_masked_hex(s, "nsh_c4", f->nsh.c[3], m->nsh.c[3]);
+        format_be32_masked_hex(s, "nsh_c1", f->nsh.context[0],
+                               m->nsh.context[0]);
+        format_be32_masked_hex(s, "nsh_c2", f->nsh.context[1],
+                               m->nsh.context[1]);
+        format_be32_masked_hex(s, "nsh_c3", f->nsh.context[2],
+                               m->nsh.context[2]);
+        format_be32_masked_hex(s, "nsh_c4", f->nsh.context[3],
+                               m->nsh.context[3]);
     }
 }
 

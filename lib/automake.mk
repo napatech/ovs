@@ -80,6 +80,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/dpdk.h \
 	lib/dpif-netdev.c \
 	lib/dpif-netdev.h \
+	lib/dpif-netdev-perf.c \
+	lib/dpif-netdev-perf.h \
 	lib/dpif-provider.h \
 	lib/dpif.c \
 	lib/dpif.h \
@@ -465,6 +467,7 @@ MAN_FRAGMENTS += \
 	lib/db-ctl-base.man \
 	lib/dpctl.man \
 	lib/memory-unixctl.man \
+	lib/netdev-dpdk-unixctl.man \
 	lib/ofp-version.man \
 	lib/ovs.tmac \
 	lib/service.man \

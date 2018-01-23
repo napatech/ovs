@@ -203,6 +203,7 @@ Lili Huang                      huanglili.huang@huawei.com
 Linda Sun                       lsun@vmware.com
 Lior Neudorfer                  lior@guardicore.com
 Lorand Jakab                    lojakab@cisco.com
+Lorenzo Bianconi                lorenzo.bianconi@redhat.com
 Luca Giraudo                    lgiraudo@nicira.com
 Lucas Alvares Gomes             lucasagomes@gmail.com
 Lucian Petrut                   lpetrut@cloudbasesolutions.com
@@ -310,7 +311,7 @@ SUGYO Kazushi                   sugyo.org@gmail.com
 Tadaaki Nagao                   nagao@stratosphere.co.jp
 Terry Wilson                    twilson@redhat.com
 Tetsuo NAKAGAWA                 nakagawa@mxc.nes.nec.co.jp
-Thadeu Lima de Souza Cascardo   cascardo@redhat.com
+Thadeu Lima de Souza Cascardo   cascardo@cascardo.eti.br
 Thomas F. Herbert               thomasfherbert@gmail.com
 Thomas Goirand                  zigo@debian.org
 Thomas Graf                     tgraf@noironetworks.com
@@ -376,6 +377,7 @@ Aaron M. Ucko                   ucko@debian.org
 Abhinav Singhal                 Abhinav.Singhal@spirent.com
 Adam Heath                      doogie@brainfood.com
 Ahmed Bilal                     numan252@gmail.com
+Alan Kayahan                    hsykay@gmail.com
 Alan Shieh                      ashieh@nicira.com
 Alban Browaeys                  prahal@yahoo.com
 Alex Yip                        alex@nicira.com
@@ -400,6 +402,7 @@ Ben Basler                      bbasler@nicira.com
 Bhargava Shastry                bshastry@sec.t-labs.tu-berlin.de
 Bob Ball                        bob.ball@citrix.com
 Brad Hall                       brad@nicira.com
+Brad Cowie                      brad@wand.net.nz
 Brailey Josh                    josh@faucet.nz
 Brandon Heller                  brandonh@stanford.edu
 Brendan Kelley                  bkelley@nicira.com
@@ -521,6 +524,7 @@ Pasi Kärkkäinen                 pasik@iki.fi
 Patrik Andersson R              patrik.r.andersson@ericsson.com
 Paulo Cravero                   pcravero@as2594.net
 Pawan Shukla                    shuklap@vmware.com
+Periyasamy Palanisamy           periyasamy.palanisamy@ericsson.com
 Peter Amidon                    peter@picnicpark.org
 Peter Balland                   peter@nicira.com
 Peter Phaal                     peter.phaal@inmon.com
@@ -589,6 +593,7 @@ likunyun                        kunyunli@hotmail.com
 meishengxin                     meishengxin@huawei.com
 neeraj mehta                    mehtaneeraj07@gmail.com
 rahim entezari                  rahim.entezari@gmail.com
+shivani dommeti                 shivani.dommeti@gmail.com
 weizj                           34965317@qq.com
 俊 赵                           zhaojun12@outlook.com
 冯全树(Crab)                    fqs888@126.com

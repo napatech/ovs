@@ -159,13 +159,18 @@ pkt_metadata_init(struct pkt_metadata *md, odp_port_t port)
 }
 
 /* This function prefetches the cachelines touched by pkt_metadata_init()
- * For performance reasons the two functions should be kept in sync. */
+ * and pkt_metadata_init_tnl().  For performance reasons the two functions
+ * should be kept in sync. */
 static inline void
 pkt_metadata_prefetch_init(struct pkt_metadata *md)
 {
     /* Prefetch cacheline0 as members till ct_state and odp_port will
      * be initialized later in pkt_metadata_init(). */
     OVS_PREFETCH(md->cacheline0);
+
+    /* Prefetch cacheline1 as members of this cacheline will be zeroed out
+     * in pkt_metadata_init_tnl(). */
+    OVS_PREFETCH(md->cacheline1);
 
     /* Prefetch cachline2 as ip_dst & ipv6_dst fields will be initialized. */
     OVS_PREFETCH(md->cacheline2);
@@ -434,9 +439,8 @@ void push_eth(struct dp_packet *packet, const struct eth_addr *dst,
               const struct eth_addr *src);
 void pop_eth(struct dp_packet *packet);
 
-void encap_nsh(struct dp_packet *packet,
-               const struct ovs_action_encap_nsh *encap_nsh);
-bool decap_nsh(struct dp_packet *packet);
+void push_nsh(struct dp_packet *packet, const struct nsh_hdr *nsh_hdr_src);
+bool pop_nsh(struct dp_packet *packet);
 
 #define LLC_DSAP_SNAP 0xaa
 #define LLC_SSAP_SNAP 0xaa
@@ -976,6 +980,7 @@ BUILD_ASSERT_DECL(ND_PREFIX_OPT_LEN == sizeof(struct ovs_nd_prefix_opt));
 
 /* Neighbor Discovery option: MTU. */
 #define ND_MTU_OPT_LEN 8
+#define ND_MTU_DEFAULT 0
 struct ovs_nd_mtu_opt {
     uint8_t  type;      /* ND_OPT_MTU */
     uint8_t  len;       /* Always 1. */
@@ -1014,6 +1019,17 @@ BUILD_ASSERT_DECL(RA_MSG_LEN == sizeof(struct ovs_ra_msg));
 
 #define ND_RA_MANAGED_ADDRESS 0x80
 #define ND_RA_OTHER_CONFIG    0x40
+
+/* Defaults based on MaxRtrInterval and MinRtrInterval from RFC 4861 section
+ * 6.2.1
+ */
+#define ND_RA_MAX_INTERVAL_DEFAULT 600
+
+static inline int
+nd_ra_min_interval_default(int max)
+{
+    return max >= 9 ? max / 3 : max * 3 / 4;
+}
 
 /*
  * Use the same struct for MLD and MLD2, naming members as the defined fields in
@@ -1123,7 +1139,8 @@ in6_addr_set_mapped_ipv4(struct in6_addr *ip6, ovs_be32 ip4)
 static inline ovs_be32
 in6_addr_get_mapped_ipv4(const struct in6_addr *addr)
 {
-    union ovs_16aligned_in6_addr *taddr = (void *) addr;
+    union ovs_16aligned_in6_addr *taddr =
+        (union ovs_16aligned_in6_addr *) addr;
     if (IN6_IS_ADDR_V4MAPPED(addr)) {
         return get_16aligned_be32(&taddr->be32[3]);
     } else {
@@ -1134,7 +1151,8 @@ in6_addr_get_mapped_ipv4(const struct in6_addr *addr)
 static inline void
 in6_addr_solicited_node(struct in6_addr *addr, const struct in6_addr *ip6)
 {
-    union ovs_16aligned_in6_addr *taddr = (void *) addr;
+    union ovs_16aligned_in6_addr *taddr =
+        (union ovs_16aligned_in6_addr *) addr;
     memset(taddr->be16, 0, sizeof(taddr->be16));
     taddr->be16[0] = htons(0xff02);
     taddr->be16[5] = htons(0x1);
@@ -1150,8 +1168,10 @@ static inline void
 in6_generate_eui64(struct eth_addr ea, struct in6_addr *prefix,
                    struct in6_addr *lla)
 {
-    union ovs_16aligned_in6_addr *taddr = (void *) lla;
-    union ovs_16aligned_in6_addr *prefix_taddr = (void *) prefix;
+    union ovs_16aligned_in6_addr *taddr =
+        (union ovs_16aligned_in6_addr *) lla;
+    union ovs_16aligned_in6_addr *prefix_taddr =
+        (union ovs_16aligned_in6_addr *) prefix;
     taddr->be16[0] = prefix_taddr->be16[0];
     taddr->be16[1] = prefix_taddr->be16[1];
     taddr->be16[2] = prefix_taddr->be16[2];
@@ -1169,7 +1189,8 @@ in6_generate_eui64(struct eth_addr ea, struct in6_addr *prefix,
 static inline void
 in6_generate_lla(struct eth_addr ea, struct in6_addr *lla)
 {
-    union ovs_16aligned_in6_addr *taddr = (void *) lla;
+    union ovs_16aligned_in6_addr *taddr =
+        (union ovs_16aligned_in6_addr *) lla;
     memset(taddr->be16, 0, sizeof(taddr->be16));
     taddr->be16[0] = htons(0xfe80);
     taddr->be16[4] = htons(((ea.ea[0] ^ 0x02) << 8) | ea.ea[1]);
@@ -1408,7 +1429,7 @@ void compose_nd_ra(struct dp_packet *,
                    const struct in6_addr *ipv6_dst,
                    uint8_t cur_hop_limit, uint8_t mo_flags,
                    ovs_be16 router_lt, ovs_be32 reachable_time,
-                   ovs_be32 retrans_timer, ovs_be32 mtu);
+                   ovs_be32 retrans_timer, uint32_t mtu);
 void packet_put_ra_prefix_opt(struct dp_packet *,
                               uint8_t plen, uint8_t la_flags,
                               ovs_be32 valid_lifetime,

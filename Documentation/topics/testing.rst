@@ -118,6 +118,10 @@ valgrind by using the ``check-valgrind`` target::
 When you do this, the "valgrind" results for test ``<N>`` are reported in files
 named ``tests/testsuite.dir/<N>/valgrind.*``.
 
+To test the testsuite of kernel datapath under valgrind, you can use the
+``check-kernel-valgrind`` target and find the "valgrind" results under
+directory ``tests/system-kmod-testsuite.dir/``.
+
 All the same options are available via TESTSUITEFLAGS.
 
 .. hint::
@@ -311,7 +315,7 @@ testsuite against that kernel module::
 
     $ make check-kmod
 
-The results of the testsuite are in ``tests/system-kmod-traffic.dir``.
+The results of the testsuite are in ``tests/system-kmod-testsuite.dir``.
 
 .. _testing-static-analysis:
 

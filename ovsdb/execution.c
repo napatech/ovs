@@ -120,9 +120,7 @@ ovsdb_execute(struct ovsdb *db, const struct ovsdb_session *session,
                                        "as first parameter");
         }
 
-        results = ovsdb_error_to_json(error);
-        ovsdb_error_destroy(error);
-        return results;
+        return ovsdb_error_to_json_free(error);
     }
 
     x.db = db;
@@ -175,11 +173,18 @@ ovsdb_execute(struct ovsdb *db, const struct ovsdb_session *session,
             error = parse_error;
         }
         /* Create read-only violation error if there is one. */
-        if (!error && read_only && !ro) {
-            error = ovsdb_error("not allowed",
-                                "%s operation not allowed when "
-                                "database server is in read only mode",
-                                op_name);
+        if (!ro && !error) {
+            if (read_only) {
+                error = ovsdb_error("not allowed",
+                                    "%s operation not allowed when "
+                                    "database server is in read only mode",
+                                    op_name);
+            } else if (db->schema->name[0] == '_') {
+                error = ovsdb_error("not allowed",
+                                    "%s operation not allowed on "
+                                    "table in reserved database %s",
+                                    op_name, db->schema->name);
+            }
         }
         if (error) {
             json_destroy(result);

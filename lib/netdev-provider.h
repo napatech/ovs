@@ -348,9 +348,8 @@ struct netdev_class {
      * If the function returns a non-zero value, some of the packets might have
      * been sent anyway.
      *
-     * If 'may_steal' is false, the caller retains ownership of all the
-     * packets.  If 'may_steal' is true, the caller transfers ownership of all
-     * the packets to the network device, regardless of success.
+     * The caller transfers ownership of all the packets to the network
+     * device, regardless of success.
      *
      * If 'concurrent_txq' is true, the caller may perform concurrent calls
      * to netdev_send() with the same 'qid'. The netdev provider is responsible
@@ -370,7 +369,7 @@ struct netdev_class {
      * datapath".  It will also prevent the OVS implementation of bonding from
      * working properly over 'netdev'.) */
     int (*send)(struct netdev *netdev, int qid, struct dp_packet_batch *batch,
-                bool may_steal, bool concurrent_txq);
+                bool concurrent_txq);
 
     /* Registers with the poll loop to wake up from the next call to
      * poll_block() when the packet transmission queue for 'netdev' has
@@ -458,6 +457,19 @@ struct netdev_class {
      * set the values of the unsupported statistics to all-1-bits
      * (UINT64_MAX). */
     int (*get_stats)(const struct netdev *netdev, struct netdev_stats *);
+
+    /* Retrieves current device custom stats for 'netdev' into 'custom_stats'.
+     *
+     * A network device should return only available statistics (if any).
+     * If there are not statistics available, empty array should be
+     * returned.
+     *
+     * The caller initializes 'custom_stats' before calling this function.
+     * The caller takes ownership over allocated array of counters inside
+     * structure netdev_custom_stats.
+     * */
+    int (*get_custom_stats)(const struct netdev *netdev,
+                            struct netdev_custom_stats *custom_stats);
 
     /* Stores the features supported by 'netdev' into each of '*current',
      * '*advertised', '*supported', and '*peer'.  Each value is a bitmap of
