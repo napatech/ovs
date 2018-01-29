@@ -1330,7 +1330,7 @@ dpif_read_actions(struct udpif *udpif, struct upcall *upcall,
 
     switch (type) {
     case SFLOW_UPCALL:
-        dpif_sflow_read_actions(flow, actions, actions_len, upcall_data);
+        dpif_sflow_read_actions(flow, actions, actions_len, upcall_data, true);
         break;
     case FLOW_SAMPLE_UPCALL:
     case IPFIX_UPCALL:
@@ -2138,7 +2138,7 @@ revalidate_ukey__(struct udpif *udpif, const struct udpif_key *ukey,
      * but not the newly revalidated wildcard mask (wc), i.e., if revalidation
      * tells that the datapath flow is now too generic and must be narrowed
      * down.  Note that we do not know if the datapath has ignored any of the
-     * wildcarded bits, so we may be overtly conservative here. */
+     * wildcarded bits, so we may be overly conservative here. */
     if (flow_wildcards_has_extra(&dp_mask, ctx.wc)) {
         goto exit;
     }

@@ -241,6 +241,14 @@
       read-only. See <code>ovn-controller</code>(8) for more information.
     </column>
 
+    <column name="external_ids" key="ovn-cms-options">
+      <code>ovn-controller</code> populates this key with the set of options
+      configured in the <ref table="Open_vSwitch"
+      column="external_ids:ovn-cms-options"/> column of the Open_vSwitch
+      database's <ref table="Open_vSwitch" db="Open_vSwitch"/> table.
+      See <code>ovn-controller</code>(8) for more information.
+    </column>
+
     <group title="Common Columns">
       The overall purpose of these columns is described under <code>Common
       Columns</code> at the beginning of this document.
@@ -1633,6 +1641,21 @@
               slla = 00:00:00:00:10:02, prefix = aef0::/64, mtu = 1450);
             </code>
           </p>
+        </dd>
+
+        <dt><code>set_meter(<var>rate</var>);</code></dt>
+        <dt><code>set_meter(<var>rate</var>, <var>burst</var>);</code></dt>
+        <dd>
+          <p>
+            <b>Parameters</b>: rate limit int field <var>rate</var> in kbps,
+            burst rate limits int field <var>burst</var> in kbps.
+          </p>
+
+          <p>
+            This action sets the rate limit for a flow.
+          </p>
+
+          <p><b>Example:</b> <code>set_meter(100, 1000);</code></p>
         </dd>
       </dl>
 
