@@ -3718,17 +3718,22 @@ static struct cmap ufid_to_rte_flow = CMAP_INITIALIZER;
 struct ufid_to_rte_flow_data {
     struct cmap_node node;
     ovs_u128 ufid;
+    bool full_offloaded;
     struct rte_flow *rte_flow;
 };
 
 /* Find rte_flow with @ufid */
 static struct rte_flow *
-ufid_to_rte_flow_find(const ovs_u128 *ufid) {
+ufid_to_rte_flow_find(const ovs_u128 *ufid, bool *full_offloaded)
+{
     size_t hash = hash_bytes(ufid, sizeof(*ufid), 0);
     struct ufid_to_rte_flow_data *data;
 
     CMAP_FOR_EACH_WITH_HASH (data, node, hash, &ufid_to_rte_flow) {
         if (ovs_u128_equals(*ufid, data->ufid)) {
+            if (full_offloaded) {
+                *full_offloaded = data->full_offloaded;
+            }
             return data->rte_flow;
         }
     }
@@ -3738,7 +3743,7 @@ ufid_to_rte_flow_find(const ovs_u128 *ufid) {
 
 static inline void
 ufid_to_rte_flow_associate(const ovs_u128 *ufid, struct rte_flow
-*rte_flow) {
+*rte_flow, bool full_offloaded) {
     size_t hash = hash_bytes(ufid, sizeof(*ufid), 0);
     struct ufid_to_rte_flow_data *data = xzalloc(sizeof(*data));
 
@@ -3748,11 +3753,11 @@ ufid_to_rte_flow_associate(const ovs_u128 *ufid, struct rte_flow
      * Thus, if following assert triggers, something is wrong:
      * the rte_flow is not destroyed.
      */
-    ovs_assert(ufid_to_rte_flow_find(ufid) == NULL);
+    ovs_assert(ufid_to_rte_flow_find(ufid, NULL) == NULL);
 
     data->ufid = *ufid;
     data->rte_flow = rte_flow;
-
+    data->full_offloaded = full_offloaded;
     cmap_insert(&ufid_to_rte_flow,
                 CONST_CAST(struct cmap_node *, &data->node), hash); }
 
@@ -4026,6 +4031,15 @@ add_flow_rss_action(struct flow_actions *actions, struct netdev
     return rss;
 }
 
+static void concat_flow_actions(struct flow_actions *actions_dst,
+                              struct flow_actions *actions_src)
+{
+    int i;
+    for (i = 0; i < actions_src->cnt; i++) {
+        add_flow_action(actions_dst, actions_src->actions[i].type, actions_src->actions[i].conf);
+    }
+}
+
 static int
 netdev_dpdk_add_rte_flow_offload(struct netdev *netdev,
                                  const struct match *match,
@@ -4042,6 +4056,7 @@ netdev_dpdk_add_rte_flow_offload(struct netdev *netdev,
     };
     struct flow_patterns patterns = { .items = NULL, .cnt = 0 };
     struct flow_actions actions = { .actions = NULL, .cnt = 0 };
+    struct flow_actions full_offl_actions = { .actions = NULL, .cnt = 0 };
     struct rte_flow *flow;
     struct rte_flow_error error;
     uint8_t *ipv4_next_proto_mask = NULL;
@@ -4236,15 +4251,86 @@ netdev_dpdk_add_rte_flow_offload(struct netdev *netdev,
     add_flow_pattern(&patterns, RTE_FLOW_ITEM_TYPE_END, NULL, NULL);
 
     struct rte_flow_action_mark mark;
-    mark.id = info->flow_mark;
+    struct rte_flow_action_vf vf;
+    if (actions_len) {
+        int found_once = 0;
+        const struct nlattr *a;
+        int left;
+        NL_ATTR_FOR_EACH_UNSAFE(a, left, nl_actions, actions_len) {
+            int type = nl_attr_type(a);
+            switch (type) {
+                case OVS_ACTION_ATTR_OUTPUT:
+                {
+                    uint32_t odp_port_out = nl_attr_get_u32(a);
+                    struct netdev_dpdk *dpdk_dev;
+                    if (found_once) {
+                        /* Does not support multiple output targets yet */
+                        full_offl_actions.cnt = 0;
+                        left = 0;
+                        break;
+                    }
+                    found_once = 1;
+
+                    LIST_FOR_EACH (dpdk_dev, list_node, &dpdk_list) {
+                        if (dev != dpdk_dev) ovs_mutex_lock(&dpdk_dev->mutex);
+                        if (odp_port_out == dpdk_dev->odp_port_no) {
+                            vf.original = 0;
+                            vf.reserved = 0;
+                            vf.id = dpdk_dev->port_id;
+                            /* to make this compile on DPDK 17.11 use RTE_FLOW_ACTION_TYPE_VF */
+                            add_flow_action(&full_offl_actions, RTE_FLOW_ACTION_TYPE_VF, &vf);
+                            if (dev != dpdk_dev) ovs_mutex_unlock(&dpdk_dev->mutex);
+                            break;
+                        }
+                        if (dev != dpdk_dev) ovs_mutex_unlock(&dpdk_dev->mutex);
+                    }
+                }
+                break;
+
+                /*
+                 * future extensions:
+                 * support for more hw offloaded actions
+                 * like OVS_ACTION_ATTR_PUSH_VLAN, OVS_ACTION_ATTR_POP_VLAN, OVS_ACTION_ATTR_RECIRC, etc
+                 * This should be combined with netdev_dpdk capabilities
+                 */
+
+                default:
+                    full_offl_actions.cnt = 0;
+                    left = 0;
+                    break;
+            }
+        }
+
+        mark.id = info->flow_mark;
+        add_flow_action(&actions, RTE_FLOW_ACTION_TYPE_MARK, &mark);
+    } else {
+        add_flow_action(&actions, RTE_FLOW_ACTION_TYPE_DROP, NULL);
+        VLOG_INFO("no action given; drop packets in hardware\n");
+    }
+
     add_flow_action(&actions, RTE_FLOW_ACTION_TYPE_MARK, &mark);
 
     struct rte_flow_action_rss *rss;
     rss = add_flow_rss_action(&actions, netdev);
     add_flow_action(&actions, RTE_FLOW_ACTION_TYPE_END, NULL);
 
-    flow = rte_flow_create(dev->port_id, &flow_attr, patterns.items,
-                           actions.actions, &error);
+    bool full_offloaded = false;
+    flow = NULL;
+
+    /* trial & error approach - in future, the sequence should be determined by device capabilities */
+    if (full_offl_actions.cnt) {
+        concat_flow_actions(&full_offl_actions, &actions);
+        /* Try full offload */
+        flow = rte_flow_create(dev->port_id, &flow_attr, patterns.items,
+                               full_offl_actions.actions, &error);
+        if (flow) full_offloaded = true;
+    }
+    if (!flow) {
+        /* partial offload */
+        flow = rte_flow_create(dev->port_id, &flow_attr, patterns.items,
+                               actions.actions, &error);
+    }
+
     free(rss);
     if (!flow) {
         VLOG_ERR("rte flow creat error: %u : message : %s\n",
@@ -4252,13 +4338,15 @@ netdev_dpdk_add_rte_flow_offload(struct netdev *netdev,
         ret = -1;
         goto out;
     }
-    ufid_to_rte_flow_associate(ufid, flow);
+    ufid_to_rte_flow_associate(ufid, flow, full_offloaded);
     VLOG_DBG("installed flow %p by ufid "UUID_FMT"\n",
              flow, UUID_ARGS((struct uuid *)ufid));
 
 out:
     free(patterns.items);
     free(actions.actions);
+    if (full_offl_actions.actions)
+        free(full_offl_actions.actions);
     return ret;
 }
 
@@ -4389,7 +4477,7 @@ netdev_dpdk_flow_put(struct netdev *netdev, struct match *match,
      * If an old rte_flow exists, it means it's a flow modification.
      * Here destroy the old rte flow first before adding a new one.
      */
-    rte_flow = ufid_to_rte_flow_find(ufid);
+    rte_flow = ufid_to_rte_flow_find(ufid, NULL);
     if (rte_flow) {
         ret = netdev_dpdk_destroy_rte_flow(netdev_dpdk_cast(netdev),
                                            ufid, rte_flow);
@@ -4410,7 +4498,7 @@ static int
 netdev_dpdk_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
                      struct dpif_flow_stats *stats OVS_UNUSED) {
 
-    struct rte_flow *rte_flow = ufid_to_rte_flow_find(ufid);
+    struct rte_flow *rte_flow = ufid_to_rte_flow_find(ufid, NULL);
 
     if (!rte_flow) {
         return -1;
