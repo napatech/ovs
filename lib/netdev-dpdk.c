@@ -145,6 +145,8 @@ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
 
 #define DPDK_ETH_PORT_ID_INVALID    RTE_MAX_ETHPORTS
 
+#define ODP_PORT_INVALID  0xffff
+
 /* DPDK library uses uint16_t for port_id. */
 typedef uint16_t dpdk_port_t;
 
@@ -445,6 +447,9 @@ struct netdev_dpdk {
         int rte_xstats_ids_size;
         uint64_t *rte_xstats_ids;
     );
+
+    /* dpdkhw_vf id */
+    uint16_t odp_port_no;
 };
 
 struct netdev_rxq_dpdk {
@@ -925,6 +930,8 @@ common_construct(struct netdev *netdev, dpdk_port_t port_no,
 
     dev->flags = NETDEV_UP | NETDEV_PROMISC;
 
+    dev->odp_port_no = ODP_PORT_INVALID;
+
     ovs_list_push_back(&dpdk_list, &dev->list_node);
 
     netdev_request_reconfigure(netdev);
@@ -1310,6 +1317,8 @@ netdev_dpdk_get_config(const struct netdev *netdev, struct smap *args)
     smap_add_format(args, "mtu", "%d", dev->mtu);
 
     if (dev->type == DPDK_DEV_ETH) {
+        smap_add(args, "need_odp_port_no", "true");
+
         smap_add_format(args, "requested_rxq_descriptors", "%d",
                         dev->requested_rxq_size);
         smap_add_format(args, "configured_rxq_descriptors", "%d",
@@ -1457,6 +1466,13 @@ netdev_dpdk_set_config(struct netdev *netdev, const struct smap *args,
 
     ovs_mutex_lock(&dpdk_mutex);
     ovs_mutex_lock(&dev->mutex);
+
+    uint32_t odp_port_no = smap_get_int(args, "odp_port_no", -1);
+    if (odp_port_no < (uint32_t)-1) {
+        VLOG_INFO("DPDK Port %s has been assigned ODP port nr %i\n", netdev->name, odp_port_no);
+        dev->odp_port_no = (uint16_t)odp_port_no;
+        goto out;
+    }
 
     dpdk_set_rxq_config(dev, args);
 

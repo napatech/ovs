@@ -1610,7 +1610,22 @@ dpif_netdev_port_add(struct dpif *dpif, struct netdev *netdev,
         error = port_no == ODPP_NONE ? EFBIG : 0;
     }
     if (!error) {
+        struct smap netdev_args;
+        bool need_odp_port_no;
         *port_nop = port_no;
+
+        smap_init(&netdev_args);
+        netdev_get_config(netdev, &netdev_args);
+        need_odp_port_no = smap_get_bool(&netdev_args, "need_odp_port_no", false);
+        smap_destroy(&netdev_args);
+
+        if (need_odp_port_no) {
+            smap_init(&netdev_args);
+            smap_add_format(&netdev_args, "odp_port_no", "%u", (unsigned)port_no);
+            netdev_set_config(netdev, &netdev_args, NULL);
+            smap_destroy(&netdev_args);
+        }
+
         error = do_add_port(dp, dpif_port, netdev_get_type(netdev), port_no);
     }
     ovs_mutex_unlock(&dp->port_mutex);
