@@ -217,7 +217,11 @@ static bool dpcls_lookup(struct dpcls *cls,
                          const struct netdev_flow_key keys[],
                          struct dpcls_rule **rules, size_t cnt,
                          int *num_lookups_p);
-
+
+static void dp_netdev_flow_used(struct dp_netdev_flow *netdev_flow,
+                         int cnt, int size, uint16_t tcp_flags,
+                         long long now);
+
 /* Set of supported meter flags */
 #define DP_SUPPORTED_METER_FLAGS_MASK \
     (OFPMF13_STATS | OFPMF13_PKTPS | OFPMF13_KBPS | OFPMF13_BURST)
@@ -562,6 +566,9 @@ struct dp_netdev_pmd_thread {
      */
     struct ovs_mutex flow_mutex;
     struct cmap flow_table OVS_GUARDED; /* Flow table. */
+
+    pthread_t stat_updater_thread;
+    int stat_updater_running;
 
     /* One classifier per in_port polled by the pmd */
     struct cmap classifiers;
@@ -2684,6 +2691,42 @@ dp_netdev_pmd_find_flow(const struct dp_netdev_pmd_thread *pmd,
 
     return NULL;
 }
+
+
+static void *dp_netdev_pmd_hwol_flow_stat_updater(void *arg)
+{
+    const struct dp_netdev_pmd_thread *pmd = (const struct dp_netdev_pmd_thread *)arg;
+    struct dp_netdev_flow *netdev_flow;
+    struct dp_netdev_port *port;
+    struct dpif_flow_stats stats;
+    long long now;
+    int err;
+
+    while (pmd->stat_updater_running) {
+        // Only do this once each 2 seconds
+        xsleep(2);
+        now = time_msec();
+      VLOG_DBG("Update hwol flow stats %lli, core id %ui\n", now, pmd->core_id);
+        /* Iterate over all the mark-to-flow map entries, since these are offloaded to hw */
+        CMAP_FOR_EACH(netdev_flow, mark_node, &flow_mark.mark_to_flow) {
+            /* Is the pmd the owning thread of this flow? */
+            if (netdev_flow->pmd_id == pmd->core_id) {
+                odp_port_t in_port = netdev_flow->flow.in_port.odp_port;
+                port = dp_netdev_lookup_port(pmd->dp, in_port);
+                VLOG_DBG("Found hwol flow in port %i, flow %p with mark %u\n", in_port, netdev_flow, netdev_flow->mark);
+
+                // consider - turn off if only partial offloaded
+                err = netdev_flow_get(port->netdev, NULL, NULL, &netdev_flow->mega_ufid, &stats, NULL);
+                if (err == 0 && stats.n_packets) {
+                    VLOG_DBG("flow update pkts %lu, bytes %lu, flags %i, now %lli\n", stats.n_packets, stats.n_bytes, stats.tcp_flags, now);
+                    dp_netdev_flow_used(netdev_flow, stats.n_packets, stats.n_bytes, stats.tcp_flags, now);
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
 
 static void
 get_dpif_flow_stats(const struct dp_netdev_flow *netdev_flow_,
@@ -5097,6 +5140,13 @@ dp_netdev_configure_pmd(struct dp_netdev_pmd_thread *pmd, struct dp_netdev *dp,
     pmd_perf_stats_init(&pmd->perf_stats);
     cmap_insert(&dp->poll_threads, CONST_CAST(struct cmap_node *, &pmd->node),
                 hash_int(core_id, 0));
+
+    if (netdev_is_flow_api_enabled()) {
+        /*  start a HWOL thread to update statistics - one for each pmd */
+        pmd->stat_updater_running = 1;
+        pmd->stat_updater_thread = ovs_thread_create("dp_netdev_flow_offload_update",
+                                        dp_netdev_pmd_hwol_flow_stat_updater, pmd);
+    }
 }
 
 static void
@@ -5104,6 +5154,10 @@ dp_netdev_destroy_pmd(struct dp_netdev_pmd_thread *pmd)
 {
     struct dpcls *cls;
 
+    if (netdev_is_flow_api_enabled()) {
+        pmd->stat_updater_running = 0;
+        pthread_join(pmd->stat_updater_thread, NULL);
+    }
     dp_netdev_pmd_flow_flush(pmd);
     hmap_destroy(&pmd->send_port_cache);
     hmap_destroy(&pmd->tnl_port_cache);

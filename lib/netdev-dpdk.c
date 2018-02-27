@@ -4465,6 +4465,36 @@ netdev_dpdk_destroy_rte_flow(struct netdev_dpdk *dev,
     return ret;
 }
 
+
+static int
+netdev_dpdk_get_rte_flow(struct netdev_dpdk *dev,
+         struct dpif_flow_stats *flow_stats, struct rte_flow *rte_flow)
+{
+    struct rte_flow_query_count qcnt;
+    struct rte_flow_error error;
+    int err;
+
+    qcnt.reset = 1;
+
+    err = rte_flow_query(dev->port_id,
+            rte_flow, RTE_FLOW_ACTION_TYPE_COUNT, (void *)&qcnt, &error);
+    if (err == 0) {
+        flow_stats->n_packets = (qcnt.hits_set)?qcnt.hits:0;
+        flow_stats->n_bytes   = (qcnt.bytes_set)?qcnt.bytes:0;
+        /*
+         * Support in DPDK not available yet
+         * to make this compile on DPDK 17.11 then don't read tcp_flags
+         * --> flow_stats->tcp_flags = (qcnt.tcp_flags_set)?qcnt.tcp_flags:0; <--
+         */
+        flow_stats->tcp_flags = 0;
+        return 0;
+    }
+
+    return -1;
+}
+
+
+
 static int
 netdev_dpdk_flow_put(struct netdev *netdev, struct match *match,
                      struct nlattr *actions, size_t actions_len,
@@ -4507,13 +4537,33 @@ netdev_dpdk_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
     return netdev_dpdk_destroy_rte_flow(netdev_dpdk_cast(netdev),
                                         ufid, rte_flow); }
 
+static int
+netdev_dpdk_flow_get(struct netdev *netdev, struct match *match, struct nlattr **actions,
+        const ovs_u128 *ufid, struct dpif_flow_stats *flow_stats,
+        struct ofpbuf *wbuffer)
+{
+    bool full_offloaded = false;
+    struct rte_flow *rte_flow = ufid_to_rte_flow_find(ufid, &full_offloaded);
+    if (!rte_flow) {
+        VLOG_ERR("failed to find flow associated with ufid " UUID_FMT "\n",
+                 UUID_ARGS((struct uuid *)ufid));
+        return ENODATA;
+    }
+    if (!full_offloaded) {
+        flow_stats->n_packets = 0;
+        return 0;
+    }
+    if (match || actions || wbuffer) return EOPNOTSUPP;
+    return netdev_dpdk_get_rte_flow(netdev_dpdk_cast(netdev), flow_stats, rte_flow);
+}
+
 #define DPDK_FLOW_OFFLOAD_API                                 \
     NULL,                   /* flow_flush */                  \
     NULL,                   /* flow_dump_create */            \
     NULL,                   /* flow_dump_destroy */           \
     NULL,                   /* flow_dump_next */              \
     netdev_dpdk_flow_put,                                     \
-    NULL,                   /* flow_get */                    \
+    netdev_dpdk_flow_get,   /* flow_get */                    \
     netdev_dpdk_flow_del,                                     \
     NULL                    /* init_flow_api */
 
